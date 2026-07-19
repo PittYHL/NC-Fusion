@@ -1,0 +1,84 @@
+{
+  "paper": "NC-Fusion: Optimizing T-Gate Cost for Hamiltonian Simulation",
+  "paper_file": "../NC_Fusion.pdf",
+  "default_seed": 0,
+  "benchmarks": [
+    {"name": "LiH", "family": "Molecule", "structure": "molecule", "qubits": 12, "pauli_terms": 630},
+    {"name": "H2O", "family": "Molecule", "structure": "molecule", "qubits": 14, "pauli_terms": 1085},
+    {"name": "N2", "family": "Molecule", "structure": "molecule", "qubits": 20, "pauli_terms": 2950},
+    {"name": "H2S", "family": "Molecule", "structure": "molecule", "qubits": 22, "pauli_terms": 6245, "two_qubit_supported": false},
+    {"name": "CO2", "family": "Molecule", "structure": "molecule", "qubits": 30, "pauli_terms": 16121, "two_qubit_supported": false},
+    {"name": "MgO", "family": "Molecule", "structure": "molecule", "qubits": 28, "pauli_terms": 24194},
+    {"name": "NaCl", "family": "Molecule", "structure": "molecule", "qubits": 36, "pauli_terms": 64006},
+    {"name": "Ising-2D-30", "family": "Ising", "structure": "2D", "qubits": 30, "pauli_terms": 79},
+    {"name": "Ising-2D-60", "family": "Ising", "structure": "2D", "qubits": 60, "pauli_terms": 164},
+    {"name": "Ising-3D-30", "family": "Ising", "structure": "3D", "qubits": 30, "pauli_terms": 89},
+    {"name": "Ising-3D-60", "family": "Ising", "structure": "3D", "qubits": 60, "pauli_terms": 193},
+    {"name": "Heisenberg-2D-30", "family": "Heisenberg", "structure": "2D", "qubits": 30, "pauli_terms": 147},
+    {"name": "Heisenberg-2D-60", "family": "Heisenberg", "structure": "2D", "qubits": 60, "pauli_terms": 312},
+    {"name": "Heisenberg-3D-30", "family": "Heisenberg", "structure": "3D", "qubits": 30, "pauli_terms": 177},
+    {"name": "Heisenberg-3D-60", "family": "Heisenberg", "structure": "3D", "qubits": 60, "pauli_terms": 399},
+    {"name": "H2", "family": "Hamiltonian", "structure": "small", "qubits": 4, "pauli_terms": 14},
+    {"name": "LiH-reduced", "family": "Hamiltonian", "structure": "small", "qubits": 4, "pauli_terms": 26},
+    {"name": "Heisenberg-4", "family": "Hamiltonian", "structure": "small", "qubits": 4, "pauli_terms": 16},
+    {"name": "Heisenberg-6", "family": "Hamiltonian", "structure": "small", "qubits": 6, "pauli_terms": 24}
+  ],
+  "experiments": [
+    {
+      "name": "table4",
+      "section": "5.2-5.3",
+      "description": "Main comparison of T-count, T-depth, and Clifford count.",
+      "benchmarks": ["LiH", "H2O", "N2", "Ising-2D-30", "Ising-2D-60", "Ising-3D-30", "Ising-3D-60", "Heisenberg-2D-30", "Heisenberg-2D-60", "Heisenberg-3D-30", "Heisenberg-3D-60"],
+      "methods": ["gridsyn", "rustiq", "ncf-one", "ncf-two"],
+      "settings": {"synthesis_error": 0.001, "single_window": 4, "two_window": 128, "trotter_steps": 1, "evolution_time": 1.0, "t_budget": 60}
+    },
+    {
+      "name": "sensitivity",
+      "section": "5.5",
+      "description": "Window-size sensitivity for four representative benchmarks.",
+      "benchmarks": ["LiH", "H2O", "Ising-2D-60", "Heisenberg-2D-60"],
+      "methods": ["ncf-one", "ncf-two"],
+      "settings": {"single_windows": ["full", 128, 64, 32, 16, 8, 4], "two_windows": ["full", 256, 128, 64, 32, 16], "synthesis_error": 0.001, "trotter_steps": 1, "evolution_time": 1.0, "t_budget": 60}
+    },
+    {
+      "name": "error-evaluation",
+      "section": "5.7",
+      "description": "Trotter operator-norm error and application-level fidelity on LiH.",
+      "benchmarks": ["LiH"],
+      "methods": ["gridsyn", "ncf-one"],
+      "settings": {"trotter_steps": [1, 5, 10, 20], "logical_error_rates": [1e-6, 1e-7], "synthesis_error": 0.001, "evolution_time": 1.0, "t_budget": 60}
+    },
+    {
+      "name": "random-order",
+      "section": "5.6",
+      "description": "Thirty randomized Pauli-order runs on four benchmarks.",
+      "benchmarks": ["LiH", "H2O", "Ising-2D-60", "Heisenberg-2D-60"],
+      "methods": ["ncf-one"],
+      "settings": {"repetitions": 30, "single_window": 4, "synthesis_error": 0.001, "trotter_steps": 1, "evolution_time": 1.0, "t_budget": 60}
+    },
+    {
+      "name": "scalability",
+      "section": "5.8",
+      "description": "Stage-I/II/III compilation time and synthesis scalability.",
+      "benchmarks": ["LiH", "H2O", "N2", "H2S", "CO2", "MgO", "NaCl"],
+      "methods": ["ncf-one"],
+      "settings": {"single_window": 4, "two_window": 128, "synthesis_error": 0.001, "trotter_steps": 1, "evolution_time": 1.0, "t_budget": 60}
+    },
+    {
+      "name": "optimizer-comparison",
+      "section": "5.9",
+      "description": "Comparison with phase-polynomial, rotation-merging, and ZX optimizers.",
+      "benchmarks": ["H2", "LiH-reduced", "Heisenberg-4", "Heisenberg-6"],
+      "methods": ["gridsyn", "ncf-one"],
+      "settings": {"synthesis_error": 0.001, "trotter_steps": 1, "evolution_time": 1.0, "t_budget": 60}
+    },
+    {
+      "name": "spacetime-volume",
+      "section": "5.10",
+      "description": "Relative FTQC spacetime volume for one and ten magic-state factories.",
+      "benchmarks": ["LiH", "H2O", "N2", "H2S", "CO2", "MgO", "NaCl", "Ising-2D-30", "Ising-2D-60", "Ising-3D-30", "Ising-3D-60", "Heisenberg-2D-30", "Heisenberg-2D-60", "Heisenberg-3D-30", "Heisenberg-3D-60"],
+      "methods": ["gridsyn", "ncf-one"],
+      "settings": {"magic_state_factories": [1, 10], "synthesis_error": 0.001, "trotter_steps": 1, "evolution_time": 1.0, "t_budget": 60}
+    }
+  ]
+}

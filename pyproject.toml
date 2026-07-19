@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nc-fusion"
+version = "0.1.0"
+description = "Reproducibility harness for NC-Fusion Hamiltonian simulation experiments"
+requires-python = ">=3.9"
+readme = "README.md"
+dependencies = []
+
+[project.optional-dependencies]
+core = ["numpy>=1.23"]
+paper = [
+  "numpy>=1.23",
+  "scipy>=1.10",
+  "networkx>=3.0",
+  "matplotlib>=3.7",
+  "joblib>=1.3",
+  "qiskit>=1.0",
+  "qiskit-nature>=0.7",
+  "qiskit-aer>=0.13",
+  "pyscf>=2.3",
+  "qiskit-gridsynth-plugin",
+  "trasyn",
+  "rustiq",
+  "pyzx",
+  "bqskit",
+  "pytket",
+  "prettytable",
+]
+
+[project.scripts]
+ncfusion = "ncfusion.cli:main"
+
+[tool.setuptools]
+packages = ["ncfusion", "micro_artifact"]
+
+[tool.setuptools.package-dir]
+ncfusion = "src/ncfusion"
+micro_artifact = "micro_artifact"

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Local paper and machine-specific inputs
+paper/NC_Fusion.pdf
+unitary.txt
+synthetiq_out/
+
+# Generated artifacts and logs
+results/runs/*
+!results/runs/.gitkeep
+results/smoke/
+*.log
+slurm-*.out
+
+# Research scratch files
+*.npy
+*.ipynb
+*.txt
+
+# QASM files in circuits/ are intentionally tracked when supplied for release.
