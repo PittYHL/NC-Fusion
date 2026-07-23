@@ -39,8 +39,8 @@ def NC_Fusion(
     t_budget:
         Per-rotation Trasyn T-budget.
     gpu:
-        GPU index passed to Trasyn. Use 0 for the first GPU or CPU-compatible
-        configurations.
+        Trasyn GPU flag. Use ``0`` for CPU synthesis and ``1`` to enable GPU
+        synthesis. Trasyn currently does not expose a GPU-device index here.
     trotter_steps:
         Number of repeated Trotter steps in each returned circuit.
     evolution_time:
@@ -75,8 +75,8 @@ def NC_Fusion(
         raise ValueError("error_threshold must be positive")
     if t_budget < 1:
         raise ValueError("t_budget must be positive")
-    if gpu < 0:
-        raise ValueError("gpu must be non-negative")
+    if gpu not in (0, 1):
+        raise ValueError("gpu must be 0 (CPU) or 1 (GPU)")
     if trotter_steps < 1:
         raise ValueError("trotter_steps must be positive")
     if not hasattr(hamiltonian, "paulis") or not hasattr(hamiltonian, "coeffs"):
@@ -102,7 +102,7 @@ def NC_Fusion(
         error_threshold,
         budget,
         hamiltonian.num_qubits,
-        gpu=gpu,
+        gpu=int(gpu == 1),
         num_paulis=pauli_count,
         fix_error_threshold=int(fix_error_threshold),
         rz=int(use_gridsynth),

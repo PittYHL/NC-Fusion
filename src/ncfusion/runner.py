@@ -111,11 +111,18 @@ def run_paper(
     *,
     reuse_existing: bool = True,
     save_qasm: bool = True,
+    synthesis_error: float | None = None,
 ) -> dict[str, Any]:
     experiment = find_experiment(experiment_name)
     selected = select_benchmarks(experiment, requested_benchmarks)
     chosen_methods = tuple(methods or experiment.methods)
     from micro_artifact.data import reusable_record
+
+    experiment_settings = dict(experiment.settings)
+    if synthesis_error is not None:
+        if synthesis_error <= 0:
+            raise ValueError("synthesis_error must be positive")
+        experiment_settings["synthesis_error"] = float(synthesis_error)
 
     # Only the fixed main/scalability configurations can be satisfied solely
     # from the stored producer QASM.  Error, random-order, and sensitivity
@@ -158,7 +165,7 @@ def run_paper(
         for method in chosen_methods:
             if method == "ncf-two" and not benchmark.two_qubit_supported:
                 continue
-            settings_runs: list[dict[str, object]] = [dict(experiment.settings)]
+            settings_runs: list[dict[str, object]] = [dict(experiment_settings)]
             if experiment.name == "sensitivity":
                 windows = experiment.settings.get(
                     "single_windows" if method == "ncf-one" else "two_windows", []
@@ -169,18 +176,18 @@ def run_paper(
                         # Full-window values are represented by the measured
                         # Pauli count; run_benchmark resolves it after the
                         # Hamiltonian is loaded.
-                        settings_runs.append({**experiment.settings, "window": window})
+                        settings_runs.append({**experiment_settings, "window": window})
                     else:
                         key = "single_window" if method == "ncf-one" else "two_window"
-                        settings_runs.append({**experiment.settings, key: window, "window": window})
+                        settings_runs.append({**experiment_settings, key: window, "window": window})
             elif experiment.name == "error-evaluation":
                 settings_runs = [
-                    {**experiment.settings, "trotter_steps": steps, "trotter_step": steps}
+                    {**experiment_settings, "trotter_steps": steps, "trotter_step": steps}
                     for steps in experiment.settings["trotter_steps"]
                 ]
             elif experiment.name == "random-order":
                 settings_runs = [
-                    {**experiment.settings, "pauli_order_seed": seed, "repetition": seed}
+                    {**experiment_settings, "pauli_order_seed": seed, "repetition": seed}
                     for seed in range(int(experiment.settings["repetitions"]))
                 ]
 
@@ -212,6 +219,8 @@ def run_paper(
     manifest["record_count"] = len(records)
     manifest["reuse_existing"] = reuse_existing
     manifest["save_qasm"] = save_qasm and experiment.name != "sensitivity"
+    if synthesis_error is not None:
+        manifest["synthesis_error_override"] = float(synthesis_error)
     write_json(output / "manifest.json", manifest)
     write_records_csv(output / "metrics.csv", records)
     return {"manifest": manifest, "records": records}

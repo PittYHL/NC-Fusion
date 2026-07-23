@@ -93,6 +93,7 @@ def run_configured(
     gpu: int = 0,
     reuse_existing: bool = True,
     save_qasm: bool = True,
+    synthesis_error: float | None = None,
 ) -> dict[str, Any]:
     """Run one configured experiment and write its manifest and CSV output."""
 
@@ -105,6 +106,7 @@ def run_configured(
         methods=methods,
         reuse_existing=reuse_existing,
         save_qasm=save_qasm,
+        synthesis_error=synthesis_error,
     )
 
 

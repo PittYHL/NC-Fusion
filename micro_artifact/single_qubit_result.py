@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+import sys
 from typing import Any
 
 from ncfusion.metrics import write_json, write_records_csv
 from ncfusion.spec import find_benchmark, find_experiment
 
-from .common import run_cli, run_configured
+from .common import add_cli_arguments, run_configured
 from .data import exact_t_depth, reusable_record
 
 
@@ -127,11 +129,14 @@ def run(
     seed: int = 0,
     gpu: int = 0,
     source: str = "existing",
+    error_threshold: float = 0.001,
 ) -> dict[str, Any]:
     """Load or generate the single-qubit NC-Fusion producer dataset."""
 
     if source not in {"existing", "generate"}:
         raise ValueError("source must be existing or generate")
+    if error_threshold <= 0:
+        raise ValueError("error_threshold must be positive")
     selected = list(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
     if source == "generate":
         configured_experiments = {
@@ -152,6 +157,7 @@ def run(
                 gpu=gpu,
                 reuse_existing=False,
                 save_qasm=True,
+                synthesis_error=error_threshold,
             )
             generated_records.extend(result["records"])
         unsupported = [
@@ -199,6 +205,7 @@ def run(
         "artifact_version": "0.1.0",
         "evaluation": "single_qubit_result",
         "source": "existing",
+        "gpu": gpu,
         "benchmarks": selected,
         "methods": ["ncf-one", *BASELINE_METHODS],
         "record_count": len(records),
@@ -214,10 +221,32 @@ def run(
     }
     if source == "generate":
         manifest["source"] = "generate"
+        manifest["synthesis_error_override"] = error_threshold
     write_json(output_path / "manifest.json", manifest)
     write_records_csv(output_path / "metrics.csv", records)
     return {"manifest": manifest, "records": records}
 
 
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the single-qubit NC-Fusion evaluation")
+    add_cli_arguments(parser, include_source=True)
+    parser.add_argument("--error-threshold", type=float, default=0.001)
+    args = parser.parse_args(argv)
+    try:
+        result = run(
+            output=args.output,
+            benchmarks=args.benchmarks,
+            methods=args.methods,
+            seed=args.seed,
+            gpu=args.gpu,
+            source=args.source,
+            error_threshold=args.error_threshold,
+        )
+    except (KeyError, RuntimeError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
+    print(f"Completed {result['manifest']['record_count']} records; wrote {args.output}")
+
+
 if __name__ == "__main__":
-    run_cli("single_qubit_result", run, include_source=True)
+    main()
