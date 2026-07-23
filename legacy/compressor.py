@@ -3,6 +3,7 @@ from qiskit import QuantumCircuit
 from qiskit import transpile
 from qiskit.quantum_info import SparsePauliOp
 import copy
+from paths import ARTIFACT_ROOT, circuit_path
 from docker import (
     clear_unitary_output,
     execute_main_in_docker,
@@ -279,7 +280,7 @@ def compressor_circuit(new_paulis, commute_paulis, circuits, error_threshold, bu
     # qc = rewrite_clifford_rz_u3_gates(qc)
     # density_matrix_error(original_qc, qc)
     if benchmark is not None:
-        with open("circuits/" + benchmark + "_" + "ncf" + "_rz.qasm", "w") as f:
+        with circuit_path(benchmark, "ncf_rz").open("w") as f:
             f.write(dumps(qc))
     if not synthesize:
         for _ in range(trotter_steps):
@@ -369,7 +370,7 @@ def compressor_circuit(new_paulis, commute_paulis, circuits, error_threshold, bu
 
     # density_matrix_error(qc, new_qc)
     if benchmark is not None:
-        with open("circuits/" + benchmark + "_" + "ncf" + "_c+t.qasm", "w") as f:
+        with circuit_path(benchmark, "ncf_c+t").open("w") as f:
             f.write(dumps(new_qc))
     t_count = sum(1 for instr, _, _ in new_qc.data if instr.name == 't')
     clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name != 't')
@@ -459,7 +460,7 @@ def synthetiq_compressor(new_paulis, commute_paulis, circuits, error_threshold, 
                 if len(new_paulis[i]) > 1:
                     temp_qc, used_qubits, reverse_map = compress_circuit(temp_qc)
 
-                    write_unitary_to_file(temp_qc, "unitary.txt")
+                    write_unitary_to_file(temp_qc, ARTIFACT_ROOT / "unitary.txt")
                     time_start = time.time()
                     execute_main_in_docker(error_threshold)
                     time_end = time.time()

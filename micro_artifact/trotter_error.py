@@ -13,7 +13,7 @@ from ncfusion.metrics import write_json, write_records_csv
 from ncfusion.runner import dependency_status
 
 from .common import add_cli_arguments
-from .error_common import compile_method, validate_methods
+from .error_common import compile_method, load_existing_method_circuits, validate_methods
 
 
 STATUS = "available"
@@ -21,7 +21,7 @@ DEFAULT_TROTTER_STEPS = (1, 5, 10, 20)
 
 
 def run(
-    output: Path | str = "results/runs/trotter_error",
+    output: Path | str = "micro_artifact/results/runs/trotter_error",
     *,
     benchmarks: list[str] | None = None,
     methods: list[str] | None = None,
@@ -64,18 +64,27 @@ def run(
         for method in selected_methods:
             for step_count in steps:
                 start = time.perf_counter()
-                rz_qc, _ = compile_method(
-                    hamiltonian,
-                    method,
-                    synthesize=False,
-                    error_threshold=error_threshold,
-                    t_budget=t_budget,
-                    gpu=gpu,
-                    trotter_steps=step_count,
-                    evolution_time=evolution_time,
-                    window=window,
-                    pauli_order_seed=seed if method == "ncf-one" else None,
+                existing = (
+                    load_existing_method_circuits(spec.name, method)
+                    if step_count == 1 else None
                 )
+                if existing is not None:
+                    rz_qc, _, compilation_time = existing
+                else:
+                    compile_started = time.perf_counter()
+                    rz_qc, _ = compile_method(
+                        hamiltonian,
+                        method,
+                        synthesize=False,
+                        error_threshold=error_threshold,
+                        t_budget=t_budget,
+                        gpu=gpu,
+                        trotter_steps=step_count,
+                        evolution_time=evolution_time,
+                        window=window,
+                        pauli_order_seed=seed if method == "ncf-one" else None,
+                    )
+                    compilation_time = time.perf_counter() - compile_started
                 error = trotter_operator_norm_error(
                     hamiltonian,
                     rz_qc,
@@ -95,6 +104,8 @@ def run(
                         "operator_norm_error": float(error),
                         "rz_gate_count": int(rz_gate_count),
                         "runtime_seconds": round(time.perf_counter() - start, 4),
+                        "compilation_time_seconds": round(compilation_time, 4) if compilation_time is not None else None,
+                        "data_source": "existing_qasm" if existing is not None else "generated",
                     }
                 )
 

@@ -6,16 +6,21 @@ from pathlib import Path
 from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import Operator
 import numpy as np
+from paths import ARTIFACT_ROOT
+
+
+_DEFAULT_SYNTHETIQ_OUTPUT = ARTIFACT_ROOT / "synthetiq_out"
+_DEFAULT_UNITARY = ARTIFACT_ROOT / "unitary.txt"
 
 def run_docker_with_volumes():
     """Start Synthetiq using evaluator-provided portable host paths."""
     image = os.environ.get("SYNTHETIQ_IMAGE", "synthetiq")
     container = os.environ.get("SYNTHETIQ_CONTAINER", "synthetiq_container")
     input_file = Path(
-        os.environ.get("SYNTHETIQ_INPUT_FILE", str(Path.cwd() / "unitary.txt"))
+        os.environ.get("SYNTHETIQ_INPUT_FILE", str(_DEFAULT_UNITARY))
     ).resolve()
     output_dir = Path(
-        os.environ.get("SYNTHETIQ_OUTPUT_DIR", str(Path.cwd() / "synthetiq_out"))
+        os.environ.get("SYNTHETIQ_OUTPUT_DIR", str(_DEFAULT_SYNTHETIQ_OUTPUT))
     ).resolve()
     input_file.parent.mkdir(parents=True, exist_ok=True)
     input_file.touch(exist_ok=True)
@@ -46,7 +51,7 @@ def execute_main_in_docker(threshold, input_filename = "unitary.txt"):
 
 def clear_unitary_output():
     unitary_path = Path(
-        os.environ.get("SYNTHETIQ_OUTPUT_DIR", str(Path.cwd() / "synthetiq_out"))
+        os.environ.get("SYNTHETIQ_OUTPUT_DIR", str(_DEFAULT_SYNTHETIQ_OUTPUT))
     ) / "unitary"
 
     if not unitary_path.exists():
@@ -64,7 +69,7 @@ def clear_unitary_output():
 
 def load_all_qasm_circuits():
     output_dir = Path(
-        os.environ.get("SYNTHETIQ_OUTPUT_DIR", str(Path.cwd() / "synthetiq_out"))
+        os.environ.get("SYNTHETIQ_OUTPUT_DIR", str(_DEFAULT_SYNTHETIQ_OUTPUT))
     )
     unitary_dir = output_dir / "unitary"
 
@@ -88,13 +93,17 @@ def load_all_qasm_circuits():
 
     return circuits
 
-def write_unitary_to_file(circuit: QuantumCircuit, output_file="unitary.txt"):
+def write_unitary_to_file(circuit: QuantumCircuit, output_file=_DEFAULT_UNITARY):
     # Compute the unitary matrix
     unitary = Operator(circuit).data  # complex numpy array
     dim = unitary.shape[0]
     n_qubits = int(np.log2(dim))  # Number of qubits
 
-    with open(output_file, "w") as f:
+    output_path = Path(output_file)
+    if not output_path.is_absolute():
+        output_path = ARTIFACT_ROOT / output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
         f.write("matrix\n")
         f.write(f"{n_qubits}\n")
 

@@ -25,6 +25,7 @@ from ncfusion.metrics import write_json, write_records_csv
 from ncfusion.runner import dependency_status
 
 from .common import add_cli_arguments
+from .data import reusable_record
 
 
 STATUS = "available"
@@ -69,7 +70,7 @@ def _seed_randomness(seed: int) -> None:
 
 
 def run(
-    output: Path | str = "results/runs/precision_abalation",
+    output: Path | str = "micro_artifact/results/runs/precision_abalation",
     *,
     benchmarks: list[str] | None = None,
     methods: list[str] | None = None,
@@ -113,6 +114,32 @@ def run(
             spec = find_benchmark(benchmark_name)
             hamiltonian = build_hamiltonian(spec)
             for fix_value, fix_error_threshold, variant in variants:
+                if selected_budget == 1 and not fix_error_threshold:
+                    existing = reusable_record(spec, "ncf-one")
+                    if existing is not None:
+                        record = {
+                            key: existing[key]
+                            for key in ("t_count", "t_depth", "clifford_count", "gate_count")
+                        }
+                        record.update(
+                            {
+                                "benchmark": spec.name,
+                                "budget": selected_budget,
+                                "variant": variant,
+                                "fix_error_threshold": fix_value,
+                                "error_threshold": error_threshold,
+                                "window": window if window is not None else 4,
+                                "trotter_steps": trotter_steps,
+                                "evolution_time": evolution_time,
+                                "runtime_seconds": existing.get("compilation_time_seconds"),
+                                "compilation_time_seconds": existing.get("compilation_time_seconds"),
+                                "data_source": "single_qubit_result",
+                                "qasm_path": existing.get("qasm_path"),
+                            }
+                        )
+                        records.append(record)
+                        continue
+
                 # Reset the grouping order before each arm so this comparison
                 # isolates threshold handling rather than heuristic ordering.
                 _seed_randomness(seed)
@@ -144,6 +171,8 @@ def run(
                         "trotter_steps": trotter_steps,
                         "evolution_time": evolution_time,
                         "runtime_seconds": round(time.perf_counter() - start, 4),
+                        "compilation_time_seconds": round(time.perf_counter() - start, 4),
+                        "data_source": "generated",
                     }
                 )
                 records.append(record)

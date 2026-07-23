@@ -6,10 +6,9 @@ instead of running a synthesizer for every precision value:
 * single-qubit ``RZ``/``U3``: ``3 * log2(1 / epsilon)`` T gates;
 * two-qubit unitary: ``15 * log2.76(1 / epsilon)`` T gates.
 
-Section 5.1.4 scales the NC-Fusion precision by ``N_PS / N_U`` so that the
-total synthesis error is comparable with the baseline.  This module obtains
-``N_U`` by calling :func:`ncfusion.NC_Fusion` with ``synthesize=False`` and
-counting the non-Clifford rotation units in its returned circuit.
+Section 5.1.4 scales the NC-Fusion precision by ``N_RZ / N_U`` so that the
+total synthesis error is comparable with the original RZ baseline. This
+module consumes ``N_U`` and ``N_RZ`` from the producer dataset.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from ncfusion.metrics import write_json, write_records_csv
 from ncfusion.runner import dependency_status
 
 from .common import add_cli_arguments
+from .data import producer_metadata, producer_record
 
 
 STATUS = "available"
@@ -81,7 +81,7 @@ def estimate_t_gates_per_unitary(
 ) -> float:
     """Estimate T gates for one generated unitary using the paper's model.
 
-    ``precision_scale`` is normally ``N_PS / N_U`` for NC-Fusion. The
+    ``precision_scale`` is normally ``N_RZ / N_U`` for NC-Fusion. The
     returned value is deliberately a float because the paper uses an
     asymptotic estimate rather than rounding to an integer T count.
     """
@@ -111,8 +111,8 @@ def estimate_from_unitary_count(
 ) -> dict[str, float | int]:
     """Return baseline and NC-Fusion estimates from ``N_U``.
 
-    The baseline is Gridsynth-style synthesis of one RZ per Pauli string. The
-    NC-Fusion precision is scaled by ``N_PS / N_U`` as specified in the paper.
+    The baseline is Gridsynth-style synthesis of the recorded original RZ
+    circuit. The NC-Fusion precision is scaled by ``N_RZ / N_U``.
     Counts include all requested Trotter repetitions.
     """
 
@@ -166,7 +166,7 @@ def _budgets(budget: int, methods: list[str] | None) -> tuple[int, ...]:
 
 
 def run(
-    output: Path | str = "results/runs/analytical_estimation",
+    output: Path | str = "micro_artifact/results/runs/analytical_estimation",
     *,
     benchmarks: list[str] | None = None,
     methods: list[str] | None = None,
@@ -186,8 +186,6 @@ def run(
 
     import numpy as np
 
-    from ncfusion import NC_Fusion
-    from ncfusion.legacy import build_hamiltonian
     from ncfusion.spec import find_benchmark
 
     epsilon_values = tuple(float(value) for value in epsilons)
@@ -207,31 +205,29 @@ def run(
     records: list[dict[str, object]] = []
 
     for selected_budget in selected_budgets:
+        producer_method = "ncf-one" if selected_budget == 1 else "ncf-two"
         for benchmark_name in selected_benchmarks:
             spec = find_benchmark(benchmark_name)
-            hamiltonian = build_hamiltonian(spec)
-            compiled_qc, _ = NC_Fusion(
-                hamiltonian,
-                budget=selected_budget,
-                window=window,
-                error_threshold=error_threshold,
-                t_budget=t_budget,
-                gpu=gpu,
-                trotter_steps=trotter_steps,
-                evolution_time=evolution_time,
-                synthesize=False,
-                fix_error_threshold=fix_error_threshold,
-                pauli_order_seed=pauli_order_seed,
-            )
-            unitary_count = count_synthesis_unitaries(compiled_qc)
-            pauli_string_count = _non_identity_pauli_count(hamiltonian)
+            source_record = producer_record(spec.name, producer_method)
+            metadata = producer_metadata(spec.name, producer_method)
+            unitary_value = metadata.get("ncf_unitaries_generated")
+            rz_value = metadata.get("original_rz_gate_count")
+            if unitary_value is None or rz_value is None:
+                raise RuntimeError(
+                    f"Analytical estimation needs {producer_method} producer data for "
+                    f"{spec.name}. Run micro_artifact.{('single' if selected_budget == 1 else 'two')}_qubit_result "
+                    "first (use --source generate if needed)."
+                )
+            unitary_count = int(unitary_value)
+            original_rz_count = int(rz_value)
+            pauli_string_count = int((source_record or {}).get("pauli_strings") or spec.pauli_terms)
             for epsilon in epsilon_values:
                 estimate = estimate_from_unitary_count(
                     unitary_count,
-                    pauli_string_count * trotter_steps,
+                    original_rz_count,
                     epsilon,
                     budget=selected_budget,
-                    trotter_steps=1,
+                    trotter_steps=trotter_steps,
                 )
                 estimate.update(
                     {
@@ -239,7 +235,10 @@ def run(
                         "budget": selected_budget,
                         "epsilon": epsilon,
                         "pauli_strings": pauli_string_count,
-                        "compiled_gate_count": len(compiled_qc.data),
+                        "original_rz_gate_count": original_rz_count,
+                        "ncf_unitaries_generated": unitary_count,
+                        "compiled_gate_count": (source_record or {}).get("gate_count"),
+                        "source_dataset": producer_method,
                         "window": window if window is not None else (4 if selected_budget == 1 else 128),
                         "trotter_steps": trotter_steps,
                         "evolution_time": evolution_time,
@@ -258,7 +257,9 @@ def run(
         "epsilons": epsilon_values,
         "formula_single_qubit": "3 * log2(1 / epsilon)",
         "formula_two_qubit": "15 * log_base_2.76(1 / epsilon)",
-        "precision_rule": "epsilon_ncf = epsilon * N_PS / N_U",
+        "precision_rule": "epsilon_ncf = epsilon * N_RZ / N_U",
+        "baseline_count_source": "original_rz_gate_count from producer dataset",
+        "ncf_count_source": "ncf_unitaries_generated from producer dataset",
         "record_count": len(records),
         "paper_dependencies": dependency_status(),
     }

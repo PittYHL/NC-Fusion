@@ -30,6 +30,14 @@ paper = [
   "pytket",
   "prettytable",
 ]
+resource = [
+  "cirq-core==1.5.0",
+  "cirq-superstaq==0.5.66",
+  "openfermion==1.7.1",
+  "stim==1.15.0",
+  "stimcirq==1.15.0",
+  "PyMatching==2.3.1",
+]
 
 [project.scripts]
 ncfusion = "ncfusion.cli:main"

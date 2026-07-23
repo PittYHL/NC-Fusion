@@ -26,6 +26,7 @@ from ncfusion.metrics import write_json, write_records_csv
 from ncfusion.runner import dependency_status
 
 from .common import add_cli_arguments
+from .data import existing_qasm_path, reusable_record
 from .error_common import compile_method
 
 
@@ -132,7 +133,7 @@ def _circuit_metrics(circuit: Any) -> dict[str, int]:
 
 
 def run(
-    output: Path | str = "results/runs/components_abalation",
+    output: Path | str = "micro_artifact/results/runs/components_abalation",
     *,
     benchmarks: list[str] | None = None,
     variants: list[str] | None = None,
@@ -174,29 +175,89 @@ def run(
     for benchmark_name in selected_benchmarks:
         spec = find_benchmark(benchmark_name)
         hamiltonian = build_hamiltonian(spec)
-        grouped_inputs, pauli_count = _group_inputs(
-            hamiltonian,
-            budget=budget,
-            window=window,
-            pauli_order_seed=pauli_order_seed,
-        )
-        _, gridsyn_qc = compile_method(
-            hamiltonian,
-            "gridsyn",
-            synthesize=True,
-            error_threshold=error_threshold,
-            t_budget=t_budget,
-            gpu=gpu,
-            trotter_steps=trotter_steps,
-            evolution_time=evolution_time,
-            window=None,
-            pauli_order_seed=None,
-        )
+        grouped_inputs = None
+        pauli_count = int(spec.pauli_terms)
+        if any(variant != "full_ncfusion" for variant in selected_variants):
+            grouped_inputs, pauli_count = _group_inputs(
+                hamiltonian,
+                budget=budget,
+                window=window,
+                pauli_order_seed=pauli_order_seed,
+            )
+
+        gridsyn_qc = None
+        existing_grid = existing_qasm_path(spec.name, "gridsyn")
+        if existing_grid is not None:
+            from qiskit import QuantumCircuit
+
+            gridsyn_qc = QuantumCircuit.from_qasm_file(str(existing_grid))
+        if gridsyn_qc is None:
+            _, gridsyn_qc = compile_method(
+                hamiltonian,
+                "gridsyn",
+                synthesize=True,
+                error_threshold=error_threshold,
+                t_budget=t_budget,
+                gpu=gpu,
+                trotter_steps=trotter_steps,
+                evolution_time=evolution_time,
+                window=None,
+                pauli_order_seed=None,
+            )
         if gridsyn_qc is None:
             raise RuntimeError("Gridsynth did not return a reference circuit")
         gridsyn_metrics = _circuit_metrics(gridsyn_qc)
         for variant in selected_variants:
+            if variant == "full_ncfusion" and budget == 1:
+                existing = reusable_record(spec, "ncf-one")
+                if existing is not None:
+                    record = {
+                        key: existing[key]
+                        for key in ("t_count", "t_depth", "clifford_count", "gate_count")
+                    }
+                    record.update(
+                        {
+                            "benchmark": spec.name,
+                            "variant": variant,
+                            "budget": budget,
+                            "window": window,
+                            "pauli_strings": pauli_count,
+                            "trotter_steps": trotter_steps,
+                            "evolution_time": evolution_time,
+                            "rz_gate_count": existing.get("original_rz_gate_count"),
+                            "ncf_unitaries_generated": existing.get("ncf_unitaries_generated"),
+                            "original_rz_gate_count": existing.get("original_rz_gate_count"),
+                            "runtime_seconds": existing.get("compilation_time_seconds"),
+                            "compilation_time_seconds": existing.get("compilation_time_seconds"),
+                            "data_source": "single_qubit_result",
+                            "qasm_path": existing.get("qasm_path"),
+                            "gridsyn_t_count": gridsyn_metrics["t_count"],
+                            "gridsyn_t_depth": gridsyn_metrics["t_depth"],
+                            "gridsyn_clifford_count": gridsyn_metrics["clifford_count"],
+                        }
+                    )
+                    record.update(
+                        {
+                            "t_count_reduction_percent": (
+                                100.0 * (gridsyn_metrics["t_count"] - record["t_count"])
+                                / gridsyn_metrics["t_count"] if gridsyn_metrics["t_count"] else 0.0
+                            ),
+                            "t_depth_reduction_percent": (
+                                100.0 * (gridsyn_metrics["t_depth"] - record["t_depth"])
+                                / gridsyn_metrics["t_depth"] if gridsyn_metrics["t_depth"] else 0.0
+                            ),
+                            "clifford_reduction_percent": (
+                                100.0 * (gridsyn_metrics["clifford_count"] - record["clifford_count"])
+                                / gridsyn_metrics["clifford_count"] if gridsyn_metrics["clifford_count"] else 0.0
+                            ),
+                        }
+                    )
+                    records.append(record)
+                    continue
+
             start = time.perf_counter()
+            if grouped_inputs is None:
+                raise RuntimeError("ablation inputs were not generated")
             new_paulis, commute_paulis, circuits = grouped_inputs[variant]
             rz_qc, clifford_t_qc = compressor_circuit(
                 new_paulis,
@@ -231,6 +292,8 @@ def run(
                         for item in rz_qc.data
                     ),
                     "runtime_seconds": round(time.perf_counter() - start, 4),
+                    "compilation_time_seconds": round(time.perf_counter() - start, 4),
+                    "data_source": "generated",
                     "gridsyn_t_count": gridsyn_metrics["t_count"],
                     "gridsyn_t_depth": gridsyn_metrics["t_depth"],
                     "gridsyn_clifford_count": gridsyn_metrics["clifford_count"],

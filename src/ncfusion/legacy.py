@@ -136,6 +136,10 @@ def _grouped_ncf_inputs(hamiltonian, budget: int, window: int, order_seed: int |
 
     pauli_strings = list(hamiltonian.paulis.to_labels())
     coeffs = hamiltonian.coeffs
+    identity = "I" * hamiltonian.num_qubits
+    non_identity = [index for index, label in enumerate(pauli_strings) if label != identity]
+    pauli_strings = [pauli_strings[index] for index in non_identity]
+    coeffs = coeffs[non_identity]
     if order_seed is not None:
         order = np.random.default_rng(order_seed).permutation(len(pauli_strings))
         pauli_strings = [pauli_strings[index] for index in order]
@@ -153,7 +157,7 @@ def _grouped_ncf_inputs(hamiltonian, budget: int, window: int, order_seed: int |
     return reorder_pauli_groups(new_paulis, commute_paulis, circuits), len(pauli_strings)
 
 
-def _single_qubit_ncf(hamiltonian, spec, settings, gpu: int):
+def _single_qubit_ncf(hamiltonian, spec, settings, gpu: int, *, save_qasm: bool):
     from compressor import compressor_circuit
 
     (new_paulis, commute_paulis, circuits), pauli_count = _grouped_ncf_inputs(
@@ -162,7 +166,7 @@ def _single_qubit_ncf(hamiltonian, spec, settings, gpu: int):
         int(settings.get("single_window", 4)),
         settings.get("pauli_order_seed"),
     )
-    _, synthesized = compressor_circuit(
+    rz_qc, synthesized = compressor_circuit(
         new_paulis,
         commute_paulis,
         circuits,
@@ -174,18 +178,21 @@ def _single_qubit_ncf(hamiltonian, spec, settings, gpu: int):
         trotter_steps=int(settings.get("trotter_steps", 1)),
         evolution_time=float(settings.get("evolution_time", 1.0)),
         synthesize=True,
-        benchmark=spec.name,
+        benchmark=spec.name if save_qasm else None,
         fix_error_threshold=0,
         t_budget=int(settings.get("t_budget", 60)),
     )
-    return synthesized
+    return rz_qc, synthesized
 
 
-def _two_qubit_ncf(hamiltonian, settings):
+def _two_qubit_ncf(hamiltonian, spec, settings, *, save_qasm: bool):
     from compressor import synthetiq_compressor
 
     (new_paulis, commute_paulis, circuits), pauli_count = _grouped_ncf_inputs(
         hamiltonian, 2, int(settings.get("two_window", 128)), settings.get("pauli_order_seed")
+    )
+    unitary_count = sum(1 for item in new_paulis if item) + sum(
+        len(item) for item in commute_paulis
     )
     circuit = synthetiq_compressor(
         new_paulis,
@@ -199,11 +206,50 @@ def _two_qubit_ncf(hamiltonian, settings):
     )
     if circuit is None:
         raise RuntimeError("Synthetiq did not return a circuit")
-    return circuit
+    if save_qasm:
+        from qiskit import qasm2
+        from paths import circuit_path
+
+        circuit_path(spec.name, "ncf-two_c+t").write_text(
+            qasm2.dumps(circuit), encoding="utf-8"
+        )
+    return circuit, unitary_count
 
 
-def run_benchmark(spec, method: str, settings: dict[str, object], gpu: int) -> dict[str, object]:
+def _count_gates(circuit, names: set[str]) -> int:
+    return sum(
+        1
+        for item in circuit.data
+        if (item.operation if hasattr(item, "operation") else item[0]).name.lower() in names
+    )
+
+
+def _count_non_clifford_rotations(circuit) -> int:
+    import math
+
+    count = 0
+    for item in circuit.data:
+        operation = item.operation if hasattr(item, "operation") else item[0]
+        name = operation.name.lower()
+        if name in {"u", "u3"}:
+            count += 1
+        elif name == "rz":
+            ratio = float(operation.params[0]) / (math.pi / 2)
+            if not math.isclose(ratio, round(ratio), abs_tol=1e-8):
+                count += 1
+    return count
+
+
+def run_benchmark(
+    spec,
+    method: str,
+    settings: dict[str, object],
+    gpu: int,
+    *,
+    save_qasm: bool = True,
+) -> dict[str, object]:
     from baseline import baseline_circuit
+    from paths import circuit_path
 
     start = time.perf_counter()
     hamiltonian = build_hamiltonian(spec)
@@ -218,14 +264,48 @@ def run_benchmark(spec, method: str, settings: dict[str, object], gpu: int) -> d
         "gpu": gpu,
         "error_threshold": float(effective_settings.get("synthesis_error", 0.001)),
     }
+    original_rz_qc = None
+    ncf_rz_qc = None
     if method == "gridsyn":
-        _, circuit = baseline_circuit(hamiltonian, 1, GRIDSYNTH=True, rustiq=False, benchmark=spec.name, method="grid", **common)
+        rz_qc, circuit = baseline_circuit(
+            hamiltonian, 1, GRIDSYNTH=True, rustiq=False,
+            benchmark=spec.name if save_qasm else None, method="grid", **common
+        )
+        original_rz_qc = rz_qc
     elif method == "rustiq":
-        _, circuit = baseline_circuit(hamiltonian, 1, GRIDSYNTH=False, rustiq=True, benchmark=spec.name, method="rustiq", **common)
+        rz_qc, circuit = baseline_circuit(
+            hamiltonian, 1, GRIDSYNTH=False, rustiq=True,
+            benchmark=spec.name if save_qasm else None, method="rustiq", **common
+        )
+        original_rz_qc = rz_qc
     elif method == "ncf-one":
-        circuit = _single_qubit_ncf(hamiltonian, spec, effective_settings, gpu)
+        original_rz_qc, _ = baseline_circuit(
+            hamiltonian, 1, GRIDSYNTH=True, rustiq=False,
+            benchmark=None, method="grid", **{**common, "synthesize": False}
+        )
+        ncf_rz_qc, circuit = _single_qubit_ncf(
+            hamiltonian, spec, effective_settings, gpu, save_qasm=save_qasm
+        )
+        if save_qasm and original_rz_qc is not None:
+            from qiskit import qasm2
+
+            circuit_path(spec.name, "grid_rz").write_text(
+                qasm2.dumps(original_rz_qc), encoding="utf-8"
+            )
     elif method == "ncf-two":
-        circuit = _two_qubit_ncf(hamiltonian, effective_settings)
+        original_rz_qc, _ = baseline_circuit(
+            hamiltonian, 1, GRIDSYNTH=True, rustiq=False,
+            benchmark=None, method="grid", **{**common, "synthesize": False}
+        )
+        circuit, ncf_unitary_count = _two_qubit_ncf(
+            hamiltonian, spec, effective_settings, save_qasm=save_qasm
+        )
+        if save_qasm and original_rz_qc is not None:
+            from qiskit import qasm2
+
+            circuit_path(spec.name, "grid_rz").write_text(
+                qasm2.dumps(original_rz_qc), encoding="utf-8"
+            )
     elif method == "phoenix":
         from baseline import phoenix_baseline_circuit
         labels = list(hamiltonian.paulis.to_labels())
@@ -238,5 +318,20 @@ def run_benchmark(spec, method: str, settings: dict[str, object], gpu: int) -> d
 
     metrics = _metrics(circuit)
     metrics.update({"benchmark": spec.name, "method": method, "qubits": spec.qubits})
-    metrics["runtime_seconds"] = round(time.perf_counter() - start, 4)
+    runtime = round(time.perf_counter() - start, 4)
+    metrics["runtime_seconds"] = runtime
+    metrics["compilation_time_seconds"] = runtime
+    metrics["data_source"] = "generated"
+    if original_rz_qc is not None:
+        metrics["original_rz_gate_count"] = _count_gates(original_rz_qc, {"rz"})
+    if ncf_rz_qc is not None:
+        metrics["ncf_unitaries_generated"] = _count_non_clifford_rotations(ncf_rz_qc)
+    if method == "ncf-two":
+        metrics["ncf_unitaries_generated"] = ncf_unitary_count
+    if save_qasm:
+        suffixes = {"gridsyn": "grid_c+t", "rustiq": "rustiq_c+t", "ncf-one": "ncf_c+t", "ncf-two": "ncf-two_c+t"}
+        if method in suffixes:
+            metrics["qasm_path"] = str(circuit_path(spec.name, suffixes[method]))
+            if original_rz_qc is not None:
+                metrics["rz_qasm_path"] = str(circuit_path(spec.name, "grid_rz"))
     return metrics

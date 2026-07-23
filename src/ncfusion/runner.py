@@ -38,8 +38,14 @@ def dependency_status() -> dict[str, bool]:
     return {name: importlib.util.find_spec(name) is not None for name in PAPER_DEPENDENCIES}
 
 
-def missing_paper_dependencies() -> list[str]:
-    return [name for name, present in dependency_status().items() if not present]
+def missing_paper_dependencies(methods: tuple[str, ...] | None = None) -> list[str]:
+    """Return missing packages required by the selected methods."""
+
+    required = set(PAPER_DEPENDENCIES)
+    if methods is not None and "rustiq" not in methods:
+        required.discard("rustiq")
+    status = dependency_status()
+    return sorted(name for name in required if not status[name])
 
 
 def smoke_result() -> dict[str, Any]:
@@ -102,18 +108,40 @@ def run_paper(
     seed: int = 0,
     gpu: int = 0,
     methods: list[str] | None = None,
+    *,
+    reuse_existing: bool = True,
+    save_qasm: bool = True,
 ) -> dict[str, Any]:
     experiment = find_experiment(experiment_name)
     selected = select_benchmarks(experiment, requested_benchmarks)
-    missing = missing_paper_dependencies()
+    chosen_methods = tuple(methods or experiment.methods)
+    from micro_artifact.data import reusable_record
+
+    # Only the fixed main/scalability configurations can be satisfied solely
+    # from the stored producer QASM.  Error, random-order, and sensitivity
+    # experiments intentionally change compilation inputs, so they must still
+    # validate (and, when needed, import) their synthesis dependencies.
+    all_inputs_reusable = reuse_existing and experiment.name in {"table4", "scalability"}
+    if all_inputs_reusable:
+        for benchmark in selected:
+            for method in chosen_methods:
+                if method == "ncf-two" and not benchmark.two_qubit_supported:
+                    continue
+                if reusable_record(benchmark, method) is None:
+                    all_inputs_reusable = False
+                    break
+            if not all_inputs_reusable:
+                break
+    missing = missing_paper_dependencies(chosen_methods)
+    if all_inputs_reusable:
+        missing = []
     if missing:
         raise RuntimeError(
             "Full paper workflows require the packages missing from this environment: "
             + ", ".join(missing)
             + ". Install requirements-paper.txt, then rerun the command."
         )
-    chosen_methods = tuple(methods or experiment.methods)
-    if "ncf-two" in chosen_methods and shutil.which("docker") is None:
+    if "ncf-two" in chosen_methods and shutil.which("docker") is None and not all_inputs_reusable:
         raise RuntimeError(
             "The ncf-two workflow requires Docker and the Synthetiq image. "
             "Install/configure Docker and set SYNTHETIQ_IMAGE, SYNTHETIQ_INPUT_FILE, "
@@ -125,7 +153,6 @@ def run_paper(
 
     np.random.seed(seed)
     from .legacy import run_benchmark
-
     records: list[dict[str, object]] = []
     for benchmark in selected:
         for method in chosen_methods:
@@ -158,7 +185,23 @@ def run_paper(
                 ]
 
             for run_settings in settings_runs:
-                record = run_benchmark(benchmark, method=method, settings=run_settings, gpu=gpu)
+                can_reuse = reuse_existing and experiment.name != "sensitivity"
+                can_reuse = can_reuse and int(run_settings.get("trotter_steps", 1)) == 1
+                can_reuse = can_reuse and run_settings.get("pauli_order_seed") is None
+                if method == "ncf-one":
+                    can_reuse = can_reuse and int(run_settings.get("single_window", 4)) == 4
+                if method == "ncf-two":
+                    can_reuse = can_reuse and int(run_settings.get("two_window", 128)) == 128
+
+                record = reusable_record(benchmark, method) if can_reuse else None
+                if record is None:
+                    record = run_benchmark(
+                        benchmark,
+                        method=method,
+                        settings=run_settings,
+                        gpu=gpu,
+                        save_qasm=save_qasm and experiment.name != "sensitivity",
+                    )
                 for key in ("window", "trotter_step", "repetition"):
                     if key in run_settings:
                         record[key] = run_settings[key]
@@ -167,6 +210,8 @@ def run_paper(
     manifest = _manifest(experiment, selected, seed)
     manifest["methods"] = chosen_methods
     manifest["record_count"] = len(records)
+    manifest["reuse_existing"] = reuse_existing
+    manifest["save_qasm"] = save_qasm and experiment.name != "sensitivity"
     write_json(output / "manifest.json", manifest)
     write_records_csv(output / "metrics.csv", records)
     return {"manifest": manifest, "records": records}
@@ -195,7 +240,8 @@ def validate_table4(actual: Path, reference: Path, tolerance: int = 0) -> dict[s
             continue
         for metric in ("t_count", "t_depth", "clifford_count"):
             checked += 1
-            expected = int(reference_row[f"{prefix}_{metric}"])
+            reference_metric = "clifford" if metric == "clifford_count" else metric
+            expected = int(reference_row[f"{prefix}_{reference_metric}"])
             observed = int(row[metric])
             if abs(observed - expected) > tolerance:
                 mismatches.append({

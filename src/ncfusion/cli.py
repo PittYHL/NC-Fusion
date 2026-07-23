@@ -17,18 +17,18 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="list configured benchmarks and experiments")
 
     smoke = subparsers.add_parser("smoke", help="run the dependency-free artifact validation")
-    smoke.add_argument("--output", type=Path, default=Path("results/smoke"))
+    smoke.add_argument("--output", type=Path, default=Path("micro_artifact/results/smoke"))
 
     validate = subparsers.add_parser("validate", help="compare a generated Table 4 CSV with the reference")
     validate.add_argument("actual", type=Path)
-    validate.add_argument("--reference", type=Path, default=Path("results/reference/table4.csv"))
+    validate.add_argument("--reference", type=Path, default=Path("micro_artifact/results/reference/table4.csv"))
     validate.add_argument("--tolerance", type=int, default=0)
 
     run = subparsers.add_parser("run", help="run a configured paper experiment")
     run.add_argument("experiment", help="configured experiment name, e.g. table4")
     run.add_argument("--benchmark", action="append", dest="benchmarks", help="restrict to one or more benchmarks")
     run.add_argument("--method", action="append", dest="methods", help="restrict to one or more methods")
-    run.add_argument("--output", type=Path, default=Path("results/run"))
+    run.add_argument("--output", type=Path, default=Path("micro_artifact/results/run"))
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--gpu", type=int, default=0)
     return parser

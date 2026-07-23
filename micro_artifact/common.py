@@ -38,7 +38,7 @@ EVALUATIONS: dict[str, dict[str, str]] = {
     "analytical_estimation": {
         "status": "available",
         "experiment": "5.4 analytical T-count model",
-        "source": "NC_Fusion(..., synthesize=False) plus paper scaling formulas",
+        "source": "single/two-qubit producer CSVs plus paper scaling formulas",
     },
     "window_size_sensitivity": {
         "status": "available",
@@ -76,9 +76,9 @@ EVALUATIONS: dict[str, dict[str, str]] = {
         "source": "tzap + PyZX + GridSynth + T-Optimizer workflow",
     },
     "space_volume_analysis": {
-        "status": "partial",
+        "status": "available",
         "experiment": "spacetime-volume",
-        "source": "configuration exists; volume calculation is not wired",
+        "source": "stored Clifford+T QASM plus Infleqtion resource-superstaq",
     },
 }
 
@@ -91,6 +91,8 @@ def run_configured(
     methods: list[str] | None = None,
     seed: int = 0,
     gpu: int = 0,
+    reuse_existing: bool = True,
+    save_qasm: bool = True,
 ) -> dict[str, Any]:
     """Run one configured experiment and write its manifest and CSV output."""
 
@@ -101,6 +103,8 @@ def run_configured(
         seed=seed,
         gpu=gpu,
         methods=methods,
+        reuse_existing=reuse_existing,
+        save_qasm=save_qasm,
     )
 
 
@@ -113,34 +117,46 @@ def missing_evaluation(name: str, details: str) -> None:
     )
 
 
-def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
+def add_cli_arguments(parser: argparse.ArgumentParser, *, include_source: bool = False) -> None:
     """Add options shared by all evaluation modules."""
 
     parser.add_argument("--benchmark", action="append", dest="benchmarks")
     parser.add_argument("--method", action="append", dest="methods")
-    parser.add_argument("--output", type=Path, default=Path("results/runs"))
+    parser.add_argument("--output", type=Path, default=Path("micro_artifact/results/runs"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--gpu", type=int, default=0)
+    if include_source:
+        parser.add_argument(
+            "--source",
+            choices=("existing", "generate"),
+            default="existing",
+            help="reuse stored QASM/records or regenerate them",
+        )
 
 
 def run_cli(
     name: str,
     run: Callable[..., dict[str, Any]],
     argv: list[str] | None = None,
+    *,
+    include_source: bool = False,
 ) -> dict[str, Any] | None:
     """Run a module's function from the command line."""
 
     parser = argparse.ArgumentParser(description=f"Run the {name} NC-Fusion evaluation")
-    add_cli_arguments(parser)
+    add_cli_arguments(parser, include_source=include_source)
     args = parser.parse_args(argv)
     try:
-        result = run(
+        arguments = dict(
             output=args.output,
             benchmarks=args.benchmarks,
             methods=args.methods,
             seed=args.seed,
             gpu=args.gpu,
         )
+        if include_source:
+            arguments["source"] = args.source
+        result = run(**arguments)
     except (KeyError, MissingEvaluationError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from error

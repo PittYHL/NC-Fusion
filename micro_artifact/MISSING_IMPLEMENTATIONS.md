@@ -5,12 +5,18 @@ following modules are intentionally explicit about their status:
 
 | Module | Status | What is missing |
 | --- | --- | --- |
-| `space_volume_analysis.py` | Partial | The fault-tolerant spacetime-volume model. The configuration contains the benchmark list and factory counts, but the current runner emits circuit metrics only. |
+| `space_volume_analysis.py` | Available | Loads the stored `grid`, `rustiq`, and `ncf` Clifford+T QASM files and runs Infleqtion `resource-superstaq` with one and ten T factories. |
 
-The following modules are wired to existing configured experiments:
+The configuration also names `MgO` and `NaCl` for this section, but their
+Clifford+T QASM inputs are not present in the current checkout. A full run
+fails before estimation and reports those missing paths; provide those files
+to reproduce the complete scalability set.
 
-* `analytical_estimation.py` (paper Section 5.4 formulas plus unsynthesized
-  NC-Fusion unitary counts)
+The following modules are wired to existing configured experiments and reuse
+producer data where applicable:
+
+* `analytical_estimation.py` (paper Section 5.4 formulas consuming producer
+  unitary/RZ counts)
 * `components_abalation.py` (paper Section 5.6.1, using the three grouping/
   scheduling variants from `main_alg.py`)
 * `precision_abalation.py` (paper Section 5.6.2, `fix_error_threshold=0`
@@ -24,6 +30,5 @@ The following modules are wired to existing configured experiments:
 * `pauli_string_order_sensitivity.py`
 * `t_count_methods_comparison.py`
 
-Please upload the missing evaluation scripts, formulas, or parameter tables
-for the partial/missing entries. The files can then be replaced without
-changing the public `NC_Fusion` API.
+The remaining input gap is the missing `MgO` and `NaCl` spacetime-volume QASM
+set noted above; the evaluator reports those paths before starting a full run.

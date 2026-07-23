@@ -7,14 +7,9 @@ The project is organized for GitHub and MICRO-style artifact evaluation:
 
 ```text
 NC-Fusion/
-├── circuits/                 # empty by design; add generated QASM files here
-├── configs/paper.json        # paper workloads and experiment parameters
-├── docs/                     # artifact appendix and submission documentation
+├── micro_artifact/circuits/  # supplied and generated QASM files
 ├── legacy/                   # cleaned research implementation and Phoenix
-├── micro_artifact/           # one entry point per paper evaluation
-├── paper/                    # local paper copy; ignored by Git
-├── results/reference/        # reference values transcribed from Table 4
-├── results/runs/             # generated outputs; ignored except .gitkeep
+├── micro_artifact/           # artifact code, inputs, configs, docs, and results
 └── src/ncfusion/             # stable CLI and reproducibility harness
 ```
 
@@ -28,7 +23,7 @@ From the `NC-Fusion` directory:
 make smoke
 ```
 
-This runs without Qiskit and writes `results/smoke/smoke.json`.
+This runs without Qiskit and writes `micro_artifact/results/smoke/smoke.json`.
 
 List all configured workloads:
 
@@ -58,7 +53,7 @@ PYTHONPATH=src:. python -m micro_artifact.t_count_methods_comparison \
   --benchmark H2 \
   --tzap-bin /path/to/tzap \
   --t-optimizer-root /path/to/T-Optimizer \
-  --output results/runs/t-count-methods
+  --output micro_artifact/results/runs/t-count-methods
 ```
 
 The comparison records the original Clifford+RZ circuit, the GridSynth
@@ -72,25 +67,43 @@ run only a subset.
 Start with one benchmark and one method:
 
 ```bash
-make run EXPERIMENT=table4 BENCHMARK=LiH METHOD=gridsyn OUTPUT=results/runs/lih
+make run EXPERIMENT=table4 BENCHMARK=LiH METHOD=gridsyn OUTPUT=micro_artifact/results/runs/lih
 ```
 
 Run the complete configured main comparison:
 
 ```bash
-make run EXPERIMENT=table4 OUTPUT=results/runs/table4
+make run EXPERIMENT=table4 OUTPUT=micro_artifact/results/runs/table4
 ```
 
 Available experiments include `table4`, `sensitivity`, `error-evaluation`,
 `random-order`, `scalability`, `optimizer-comparison`, and
 `spacetime-volume`. Use `make list` for the benchmark and method sets.
 
+The spacetime-volume evaluation follows the original
+`ncf/NCF/Superstaq_test.py` driver and estimates the stored `grid`, `rustiq`,
+and `ncf` Clifford+T QASM files with one and ten T factories:
+
+```bash
+python -m pip install -e ".[resource]"
+git clone https://github.com/Infleqtion/resource-superstaq.git
+git -C resource-superstaq checkout 717cbbfc62e558be3f2f9acb512e992d3cd43529
+python -m pip install -e resource-superstaq
+
+PYTHONPATH=src:. python -m micro_artifact.space_volume_analysis \
+  --benchmark Ising-3D-30 --output micro_artifact/results/runs/spacetime-volume
+```
+
+The output contains `metrics.csv` with the physical-qubit count, parallel and
+serial time, primitive moments, and physical-qubit-time volume, plus a
+manifest recording the resource-superstaq revision.
+
 The evaluation-specific entry points are in
 [`micro_artifact/`](micro_artifact/). For example:
 
 ```bash
 PYTHONPATH=src:. python -m micro_artifact.window_size_sensitivity \
-  --benchmark LiH --output results/runs/window-size
+  --benchmark LiH --output micro_artifact/results/runs/window-size
 ```
 
 See [`micro_artifact/MISSING_IMPLEMENTATIONS.md`](micro_artifact/MISSING_IMPLEMENTATIONS.md)
@@ -100,22 +113,21 @@ Validate a generated main-table CSV against the reference:
 
 ```bash
 PYTHONPATH=src python -m ncfusion validate \
-  results/runs/table4/metrics.csv
+  micro_artifact/results/runs/table4/metrics.csv
 ```
 
 ## QASM files
 
-`circuits/` is intentionally empty except for `.gitkeep`. Add the generated
-QASM files there before uploading the project to GitHub. Generated run outputs
-under `results/runs/` and local caches are ignored by Git.
+Supplied and generated QASM files belong under `micro_artifact/circuits/`.
+Generated run outputs under `micro_artifact/results/runs/` and local caches are
+ignored by Git.
 
 ## Paper PDF
 
-The supplied PDF is marked confidential. It is therefore not copied into this
-public-project folder and `paper/NC_Fusion.pdf` is ignored. Keep it locally if
-needed for evaluation, or add a distributable camera-ready version explicitly.
+The supplied PDF is marked confidential and is kept as
+`micro_artifact/NC_Fusion.pdf` locally for evaluation.
 
-See [docs/ARTIFACT_APPENDIX.md](docs/ARTIFACT_APPENDIX.md) for the submission-
+See [micro_artifact/docs/ARTIFACT_APPENDIX.md](micro_artifact/docs/ARTIFACT_APPENDIX.md) for the submission-
 ready artifact appendix.
 
 See [legacy/README.md](legacy/README.md) for a map of the retained research

@@ -27,8 +27,8 @@ class CircuitMetrics:
         return asdict(self)
 
 
-def _operations(qasm: str) -> Iterable[tuple[str, tuple[int, ...]]]:
-    for raw_line in qasm.splitlines():
+def _operations_from_lines(lines: Iterable[str]) -> Iterable[tuple[str, tuple[int, ...]]]:
+    for raw_line in lines:
         line = raw_line.split("//", 1)[0].strip()
         if not line or line.startswith("//"):
             continue
@@ -43,14 +43,20 @@ def _operations(qasm: str) -> Iterable[tuple[str, tuple[int, ...]]]:
         yield name, qubits
 
 
-def metrics_from_qasm(qasm: str) -> CircuitMetrics:
+def _operations(qasm: str) -> Iterable[tuple[str, tuple[int, ...]]]:
+    return _operations_from_lines(qasm.splitlines())
+
+
+def _metrics_from_operations(
+    operations: Iterable[tuple[str, tuple[int, ...]]],
+) -> CircuitMetrics:
     t_count = 0
     clifford_count = 0
     gate_count = 0
     t_layers: dict[int, int] = {}
     t_depth = 0
 
-    for name, qubits in _operations(qasm):
+    for name, qubits in operations:
         gate_count += 1
         if name in _T_GATES:
             t_count += 1
@@ -64,8 +70,13 @@ def metrics_from_qasm(qasm: str) -> CircuitMetrics:
     return CircuitMetrics(t_count, t_depth, clifford_count, gate_count)
 
 
+def metrics_from_qasm(qasm: str) -> CircuitMetrics:
+    return _metrics_from_operations(_operations(qasm))
+
+
 def metrics_from_qasm_file(path: Path) -> CircuitMetrics:
-    return metrics_from_qasm(path.read_text(encoding="utf-8"))
+    with path.open(encoding="utf-8") as handle:
+        return _metrics_from_operations(_operations_from_lines(handle))
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -79,9 +90,12 @@ def write_records_csv(path: Path, records: Iterable[dict[str, object]]) -> None:
     if not rows:
         path.write_text("\n", encoding="utf-8")
         return
-    fields = list(rows[0])
+    fields: list[str] = []
+    for row in rows:
+        for field in row:
+            if field not in fields:
+                fields.append(field)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
-

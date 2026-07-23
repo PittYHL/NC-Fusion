@@ -8,6 +8,26 @@ from typing import Any
 SUPPORTED_METHODS = ("gridsyn", "ncf-one")
 
 
+def load_existing_method_circuits(benchmark: str, method: str) -> tuple[Any, Any, float | None] | None:
+    """Load stored ``(RZ, Clifford+T, compilation_time)`` data when present."""
+
+    from .data import existing_qasm_path, producer_metadata
+
+    rz_path = existing_qasm_path(benchmark, method, synthesized=False)
+    clifford_t_path = existing_qasm_path(benchmark, method, synthesized=True)
+    if rz_path is None or clifford_t_path is None:
+        return None
+    from qiskit import QuantumCircuit
+
+    metadata = producer_metadata(benchmark, method)
+    compilation_time = metadata.get("compilation_time_seconds")
+    return (
+        QuantumCircuit.from_qasm_file(str(rz_path)),
+        QuantumCircuit.from_qasm_file(str(clifford_t_path)),
+        float(compilation_time) if compilation_time is not None else None,
+    )
+
+
 def validate_methods(methods: list[str] | None) -> tuple[str, ...]:
     selected = tuple(methods or SUPPORTED_METHODS)
     unknown = [method for method in selected if method not in SUPPORTED_METHODS]

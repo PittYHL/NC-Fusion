@@ -65,6 +65,8 @@ def _record(
     qasm_path: Path,
     *,
     runtime_seconds: float = 0.0,
+    compilation_time_seconds: float | None = None,
+    data_source: str = "generated",
     command: str = "",
     source_stage: str = "",
     pyzx_stats: dict[str, Any] | None = None,
@@ -76,6 +78,12 @@ def _record(
         "source_stage": source_stage,
         "qasm_path": str(qasm_path),
         "runtime_seconds": round(runtime_seconds, 6),
+        "compilation_time_seconds": (
+            round(compilation_time_seconds, 6)
+            if compilation_time_seconds is not None
+            else (round(runtime_seconds, 6) if data_source != "existing_qasm" else None)
+        ),
+        "data_source": data_source,
         "command": command,
         "is_clifford_t": circuit_metrics(circuit)["rz_count"] == 0,
     }
@@ -86,6 +94,18 @@ def _record(
 
 
 def _build_reference_circuits(spec: Any, settings: dict[str, object], gpu: int) -> tuple[Any, Any]:
+    from .data import existing_qasm_path
+
+    existing_rz = existing_qasm_path(spec.name, "gridsyn", synthesized=False)
+    existing_grid = existing_qasm_path(spec.name, "gridsyn", synthesized=True)
+    if existing_rz is not None and existing_grid is not None:
+        from qiskit import QuantumCircuit
+
+        return (
+            QuantumCircuit.from_qasm_file(str(existing_rz)),
+            QuantumCircuit.from_qasm_file(str(existing_grid)),
+        )
+
     from ncfusion.legacy import build_hamiltonian
     from baseline import baseline_circuit
 
@@ -108,7 +128,7 @@ def _build_reference_circuits(spec: Any, settings: dict[str, object], gpu: int) 
 
 
 def run(
-    output: Path | str = "results/runs/t_count_methods_comparison",
+    output: Path | str = "micro_artifact/results/runs/t_count_methods_comparison",
     *,
     benchmarks: list[str] | None = None,
     methods: list[str] | None = None,
@@ -153,7 +173,21 @@ def run(
     records: list[dict[str, object]] = []
     for benchmark_name in selected_benchmarks:
         spec = find_benchmark(benchmark_name)
+        reference_started = time.perf_counter()
         rz_qc, gridsyn_qc = _build_reference_circuits(spec, settings, gpu)
+        from .data import existing_qasm_path, producer_record
+
+        reference_is_existing = (
+            existing_qasm_path(spec.name, "gridsyn", synthesized=False) is not None
+            and existing_qasm_path(spec.name, "gridsyn", synthesized=True) is not None
+        )
+        grid_record = producer_record(spec.name, "gridsyn") or {}
+        reference_compilation_time = grid_record.get("compilation_time_seconds") or grid_record.get("runtime_seconds")
+        if reference_compilation_time is not None:
+            reference_compilation_time = float(reference_compilation_time)
+        reference_source = "existing_qasm" if reference_is_existing else "generated"
+        if not reference_is_existing:
+            reference_compilation_time = time.perf_counter() - reference_started
         original_path = write_qasm(rz_qc, circuit_dir / f"{spec.name}_original_clifford_rz.qasm")
         records.append(
             _record(
@@ -162,6 +196,8 @@ def run(
                 "original_clifford_rz",
                 rz_qc,
                 original_path,
+                compilation_time_seconds=reference_compilation_time,
+                data_source=reference_source,
                 source_stage="Hamiltonian simulation",
             )
         )
@@ -175,6 +211,8 @@ def run(
                     "gridsyn_clifford_t",
                     gridsyn_qc,
                     grid_path,
+                    compilation_time_seconds=reference_compilation_time,
+                    data_source=reference_source,
                     source_stage="original_clifford_rz",
                 )
             )
@@ -332,7 +370,7 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description="Compare T-count optimizers for NC-Fusion circuits")
     parser.add_argument("--benchmark", action="append", dest="benchmarks")
     parser.add_argument("--method", action="append", dest="methods")
-    parser.add_argument("--output", type=Path, default=Path("results/runs/t_count_methods_comparison"))
+    parser.add_argument("--output", type=Path, default=Path("micro_artifact/results/runs/t_count_methods_comparison"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--error-threshold", type=float, default=0.001)

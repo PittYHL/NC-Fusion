@@ -1,5 +1,5 @@
 import networkx as nx
-from itertools import combinations
+from itertools import combinations, permutations
 import copy
 from commuting_graph import commute_check, generate_commutation_graphs
 from new_gaussian import analyze_pauli_dependencies
@@ -421,7 +421,7 @@ def grouping(pauli_strings, budget, pauli_count_constraint = 64, use_window = Fa
             elif len(ungroup) == 3:
                 current_group = {1: [ungroup[0]], 2: [ungroup[1]], 3: [ungroup[2]], 'dependent': [], 'commute': []}
             group.append(current_group)
-            return group
+            return group, no_commute_group
 
         # for the first qubit P1 and P2
         if anti_edges != []:

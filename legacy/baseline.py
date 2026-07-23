@@ -6,6 +6,7 @@ from qiskit.qasm2 import dumps
 import time
 import copy
 import subprocess
+from paths import circuit_path
 import numpy as np
 
 from phoenix import Hamiltonian
@@ -111,7 +112,7 @@ def baseline_circuit(hamiltonian, budget, error_threshold, gpu = 0, Trotter_step
         # target_basis = ['cx', 'h', 's', 'sdg', 'u3']
         qc = transpile(qc, hls_config=hls_config, basis_gates=target_basis, optimization_level=1)
         if benchmark is not None:
-            with open("circuits/" + benchmark + "_" + "rustiq" + "_RZ.qasm", "w") as f:
+            with circuit_path(benchmark, "rustiq_RZ").open("w") as f:
                 f.write(dumps(qc))
 
         if not synthesize:
@@ -284,7 +285,7 @@ def baseline_circuit(hamiltonian, budget, error_threshold, gpu = 0, Trotter_step
         # qc.draw(output="mpl")
         # plt.show()
         if benchmark is not None:
-            with open("circuits/" + benchmark + "_" + "grid" + "_rz.qasm", "w") as f:
+            with circuit_path(benchmark, "grid_rz").open("w") as f:
                 f.write(dumps(qc))
         num_rotations = 0
         new_qc = QuantumCircuit(num_qubits)
@@ -357,7 +358,7 @@ def baseline_circuit(hamiltonian, budget, error_threshold, gpu = 0, Trotter_step
         print("Number of rotations:", num_rotations)
     
     if benchmark is not None:
-        with open("circuits/" + benchmark + "_" + method + "_c+t.qasm", "w") as f:
+        with circuit_path(benchmark, method + "_c+t").open("w") as f:
             f.write(dumps(new_qc))
     t_count = sum(1 for instr, _, _ in new_qc.data if instr.name == 't')
     clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name != 't')

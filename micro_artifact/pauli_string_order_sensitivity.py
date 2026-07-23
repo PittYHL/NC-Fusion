@@ -12,7 +12,7 @@ STATUS = "available"
 
 
 def run(
-    output: Path | str = "results/runs/pauli_string_order_sensitivity",
+    output: Path | str = "micro_artifact/results/runs/pauli_string_order_sensitivity",
     *,
     benchmarks: list[str] | None = None,
     methods: list[str] | None = None,
@@ -28,6 +28,8 @@ def run(
         methods=methods,
         seed=seed,
         gpu=gpu,
+        reuse_existing=False,
+        save_qasm=False,
     )
 
 

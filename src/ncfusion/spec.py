@@ -13,7 +13,7 @@ import json
 
 
 ARTIFACT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ARTIFACT_ROOT / "configs" / "paper.json"
+CONFIG_PATH = ARTIFACT_ROOT / "micro_artifact" / "configs" / "paper.json"
 
 
 @dataclass(frozen=True)
@@ -95,4 +95,3 @@ def select_benchmarks(spec: ExperimentSpec, requested: Iterable[str] | None = No
     if missing:
         raise KeyError(f"Benchmarks {sorted(missing)} are not part of experiment {spec.name!r}")
     return selected
-

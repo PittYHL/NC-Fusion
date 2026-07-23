@@ -13,7 +13,7 @@ from ncfusion.metrics import write_json, write_records_csv
 from ncfusion.runner import dependency_status
 
 from .common import add_cli_arguments
-from .error_common import compile_method, validate_methods
+from .error_common import compile_method, load_existing_method_circuits, validate_methods
 
 
 STATUS = "available"
@@ -21,7 +21,7 @@ DEFAULT_LOGICAL_ERRORS = (1e-6, 1e-7)
 
 
 def run(
-    output: Path | str = "results/runs/application_level_fidelity",
+    output: Path | str = "micro_artifact/results/runs/application_level_fidelity",
     *,
     benchmarks: list[str] | None = None,
     methods: list[str] | None = None,
@@ -66,18 +66,27 @@ def run(
         for method in selected_methods:
             for step_count in steps:
                 start = time.perf_counter()
-                _, clifford_t_qc = compile_method(
-                    hamiltonian,
-                    method,
-                    synthesize=True,
-                    error_threshold=error_threshold,
-                    t_budget=t_budget,
-                    gpu=gpu,
-                    trotter_steps=step_count,
-                    evolution_time=evolution_time,
-                    window=window,
-                    pauli_order_seed=seed if method == "ncf-one" else None,
+                existing = (
+                    load_existing_method_circuits(spec.name, method)
+                    if step_count == 1 else None
                 )
+                if existing is not None:
+                    _, clifford_t_qc, compilation_time = existing
+                else:
+                    compile_started = time.perf_counter()
+                    _, clifford_t_qc = compile_method(
+                        hamiltonian,
+                        method,
+                        synthesize=True,
+                        error_threshold=error_threshold,
+                        t_budget=t_budget,
+                        gpu=gpu,
+                        trotter_steps=step_count,
+                        evolution_time=evolution_time,
+                        window=window,
+                        pauli_order_seed=seed if method == "ncf-one" else None,
+                    )
+                    compilation_time = time.perf_counter() - compile_started
                 if clifford_t_qc is None:
                     raise RuntimeError("compiled method did not return clifford_t_qc")
                 fidelity, noisy_fidelity = density_matrix_error_from_hamiltonian(
@@ -101,6 +110,8 @@ def run(
                                 "noisy_fidelity": float(value),
                                 "clifford_t_gate_count": len(clifford_t_qc.data),
                                 "runtime_seconds": elapsed,
+                                "compilation_time_seconds": round(compilation_time, 4) if compilation_time is not None else None,
+                                "data_source": "existing_qasm" if existing is not None else "generated",
                             }
                         )
                 else:
@@ -115,6 +126,8 @@ def run(
                             "noisy_fidelity": None,
                             "clifford_t_gate_count": len(clifford_t_qc.data),
                             "runtime_seconds": elapsed,
+                            "compilation_time_seconds": round(compilation_time, 4) if compilation_time is not None else None,
+                            "data_source": "existing_qasm" if existing is not None else "generated",
                         }
                     )
 
