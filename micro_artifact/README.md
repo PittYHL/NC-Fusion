@@ -31,6 +31,8 @@ supports the short Ising/Heisenberg aliases; omitted options use all 13
 benchmarks.
 Window-size sensitivity accepts repeated `--window-size` options such as
 `--window-size full --window-size 64`; omitted options run the complete sweep.
+Application-level fidelity accepts repeated `--trotter-steps` options to run
+only selected Trotter steps; omitted options use 1, 5, 10, and 20.
 
 Artifact experiments read existing inputs or results by default. Use their
 `--source generate` option to regenerate selected results; producer and error-evaluation

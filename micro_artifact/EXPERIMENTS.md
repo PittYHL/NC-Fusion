@@ -445,6 +445,8 @@ PYTHONPATH=src:legacy:. python -m micro_artifact.application_level_fidelity \
   --benchmark LiH \
   --method gridsyn \
   --method ncf-one \
+  --trotter-steps 1 \
+  --trotter-steps 20 \
   --logical-error 1e-6 \
   --logical-error 1e-7 \
   --output micro_artifact/results/runs/application_level_fidelity
@@ -457,6 +459,10 @@ under the fidelity run directory. In all cases, `evolution_time` remains 1.0 whi
 
 This experiment runs LiH at Trotter steps 1, 5, 10, and 20 by default. GPU
 execution is also enabled by default; pass `--gpu 0` to use the CPU. The
+selected Trotter steps can be changed by repeating `--trotter-steps`; for
+example, the command above runs only steps 1 and 20. Existing-result mode
+returns only the requested configurations and reports missing selections
+instead of silently returning unrelated steps. The
 `metrics.csv` report contains the `noisy_fidelity` values returned by
 `legacy.error_evaluation.density_matrix_error_from_hamiltonian`, one row per
 logical-error rate and Trotter step. The default logical-error rates are

@@ -87,11 +87,11 @@ def run(
     from ncfusion.spec import find_benchmark, find_experiment
     from error_evaluation import density_matrix_error_from_hamiltonian
 
-    steps = tuple(int(value) for value in trotter_steps)
+    steps = tuple(dict.fromkeys(int(value) for value in trotter_steps))
     rates = tuple(float(value) for value in logical_errors)
     if not steps or any(value < 1 for value in steps):
         raise ValueError("trotter_steps must contain positive integers")
-    if any(value <= 0 for value in rates):
+    if not rates or any(value <= 0 for value in rates):
         raise ValueError("logical_errors must be positive")
     if gpu not in (0, 1):
         raise ValueError("gpu must be 0 (CPU) or 1 (GPU)")
@@ -105,19 +105,44 @@ def run(
         raise ValueError("source must be existing or generate")
 
     selected_methods = validate_methods(methods)
-    selected_benchmarks = benchmarks or list(find_experiment("error-evaluation").benchmarks)
+    requested_benchmarks = benchmarks or list(find_experiment("error-evaluation").benchmarks)
+    selected_benchmarks = [find_benchmark(name).name for name in requested_benchmarks]
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
     records = _read_records(output_path / "metrics.csv")
     if source == "existing" and records:
+        def matches_requested(record: dict[str, object]) -> bool:
+            try:
+                benchmark_match = str(record.get("benchmark", "")) in selected_benchmarks
+                method_match = str(record.get("method", "")) in selected_methods
+                step_match = int(float(record.get("trotter_steps", ""))) in steps
+                rate = float(record.get("logical_error_rate", ""))
+                rate_match = any(abs(rate - selected) <= max(abs(selected), 1.0) * 1e-12 for selected in rates)
+            except (TypeError, ValueError):
+                return False
+            return benchmark_match and method_match and step_match and rate_match
+
+        selected_records = [record for record in records if matches_requested(record)]
+        expected_count = len(selected_benchmarks) * len(selected_methods) * len(steps) * len(rates)
+        if len(selected_records) < expected_count:
+            raise FileNotFoundError(
+                "Stored application-fidelity results are missing one or more requested "
+                f"benchmarks, methods, Trotter steps, or logical-error rates; rerun with "
+                "--source generate."
+            )
         return {
             "manifest": {
                 "evaluation": "application_level_fidelity",
                 "source_mode": "existing",
-                "record_count": len(records),
+                "benchmarks": selected_benchmarks,
+                "methods": selected_methods,
+                "trotter_steps": steps,
+                "logical_error_rates": rates,
+                "record_count": len(selected_records),
+                "stored_record_count": len(records),
                 "status": "read_existing",
             },
-            "records": records,
+            "records": selected_records,
         }
 
     def add_record(record: dict[str, object]) -> None:
