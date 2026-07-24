@@ -75,6 +75,7 @@ def run(
     t_budget: int = 60,
     window: int | None = 4,
     trotter_circuit_dir: Path | str = "micro_artifact/results/runs/trotter_error",
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Measure ideal and noisy application fidelity.
 
@@ -100,12 +101,24 @@ def run(
         )
     if error_threshold <= 0 or t_budget < 1:
         raise ValueError("error_threshold must be positive and t_budget must be positive")
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
 
     selected_methods = validate_methods(methods)
     selected_benchmarks = benchmarks or list(find_experiment("error-evaluation").benchmarks)
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
     records = _read_records(output_path / "metrics.csv")
+    if source == "existing" and records:
+        return {
+            "manifest": {
+                "evaluation": "application_level_fidelity",
+                "source_mode": "existing",
+                "record_count": len(records),
+                "status": "read_existing",
+            },
+            "records": records,
+        }
 
     def add_record(record: dict[str, object]) -> None:
         nonlocal records
@@ -118,12 +131,16 @@ def run(
         for method in selected_methods:
             for step_count in steps:
                 start = time.perf_counter()
-                trotter_generated = load_generated_method_circuits(
-                    trotter_circuit_dir, spec.name, method, step_count
-                )
-                existing = trotter_generated
-                if existing is None and step_count == 1:
-                    existing = load_existing_method_circuits(spec.name, method)
+                if source == "existing":
+                    trotter_generated = load_generated_method_circuits(
+                        trotter_circuit_dir, spec.name, method, step_count
+                    )
+                    existing = trotter_generated
+                    if existing is None and step_count == 1:
+                        existing = load_existing_method_circuits(spec.name, method)
+                else:
+                    trotter_generated = None
+                    existing = None
                 if existing is not None:
                     _, clifford_t_qc, compilation_time = existing
                     data_source = (
@@ -132,6 +149,12 @@ def run(
                         else "existing_qasm"
                     )
                 else:
+                    if source == "existing":
+                        raise FileNotFoundError(
+                            f"No stored circuit for {spec.name}, {method}, Trotter step "
+                            f"{step_count}; run trotter_error with --source generate first "
+                            "or use --source generate here."
+                        )
                     compile_started = time.perf_counter()
                     rz_qc, clifford_t_qc = compile_method(
                         hamiltonian,
@@ -214,6 +237,7 @@ def run(
         "benchmarks": selected_benchmarks,
         "methods": selected_methods,
         "trotter_steps": steps,
+        "source_mode": source,
         "evolution_time": 1.0,
         "gpu": int(gpu),
         "logical_error_rates": rates,
@@ -245,6 +269,12 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=Path("micro_artifact/results/runs/trotter_error"),
     )
+    parser.add_argument(
+        "--source",
+        choices=("existing", "generate"),
+        default="existing",
+        help="read stored circuits by default; use generate to regenerate them",
+    )
     args = parser.parse_args(argv)
     try:
         result = run(
@@ -260,6 +290,7 @@ def main(argv: list[str] | None = None) -> None:
             t_budget=args.t_budget,
             window=args.window,
             trotter_circuit_dir=args.trotter_circuit_dir,
+            source=args.source,
         )
     except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

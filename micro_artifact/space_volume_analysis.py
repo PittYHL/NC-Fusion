@@ -22,7 +22,7 @@ from ncfusion.metrics import (
     write_json,
     write_records_csv,
 )
-from ncfusion.spec import find_experiment, select_benchmarks
+from ncfusion.spec import find_benchmark, find_experiment
 
 from .common import run_cli
 
@@ -44,6 +44,17 @@ _BENCHMARK_DIRS = {
     "Heisenberg-3D-60": "Hei-3D-60",
 }
 
+_BENCHMARK_ALIASES = {
+    "is-2d-30": "Ising-2D-30",
+    "is-2d-60": "Ising-2D-60",
+    "is-3d-30": "Ising-3D-30",
+    "is-3d-60": "Ising-3D-60",
+    "hei-2d-30": "Heisenberg-2D-30",
+    "hei-2d-60": "Heisenberg-2D-60",
+    "hei-3d-30": "Heisenberg-3D-30",
+    "hei-3d-60": "Heisenberg-3D-60",
+}
+
 _METHOD_FILES = {
     "gridsyn": "grid",
     "ncf-one": "ncf",
@@ -59,6 +70,26 @@ _RESOURCE_FIELDS = (
     "re_superstaq_primitive_moments",
     "re_superstaq_error",
 )
+
+
+def _selected_benchmarks(experiment: Any, requested: list[str] | None) -> tuple[Any, ...]:
+    """Canonicalize and validate the selected spacetime benchmarks."""
+
+    allowed = {name.lower(): name for name in experiment.benchmarks}
+    selected_names: list[str] = []
+    for value in experiment.benchmarks if requested is None else requested:
+        key = value.strip().lower()
+        name = _BENCHMARK_ALIASES.get(key, allowed.get(key))
+        if name is None:
+            choices = ", ".join(experiment.benchmarks)
+            raise ValueError(
+                f"unknown spacetime-volume benchmark {value!r}; choose from: {choices}"
+            )
+        if name not in selected_names:
+            selected_names.append(name)
+    if not selected_names:
+        raise ValueError("at least one spacetime-volume benchmark must be selected")
+    return tuple(find_benchmark(name) for name in selected_names)
 
 
 def _normalise_resource_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -267,24 +298,63 @@ def run(
     methods: list[str] | None = None,
     seed: int = 0,
     gpu: int = 0,
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Run Section 5.10 from stored GridSynth and NC-Fusion QASM files."""
 
     del seed, gpu  # retained for the common artifact CLI contract
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
     output_path = Path(output)
     experiment = find_experiment("spacetime-volume")
-    selected = select_benchmarks(experiment, benchmarks)
+    selected = _selected_benchmarks(experiment, benchmarks)
     chosen_methods = tuple(methods or ("gridsyn", "ncf-one"))
     unknown = sorted(set(chosen_methods).difference(_METHOD_FILES))
     if unknown:
         known = ", ".join(_METHOD_FILES)
         raise ValueError(f"Unknown spacetime-volume method(s) {unknown}; choose from {known}")
 
+    records = read_records_csv(output_path / "metrics.csv")
+    factory_counts = tuple(int(value) for value in experiment.settings["magic_state_factories"])
+    estimates = _estimates_from_records(records)
+    if source == "existing":
+        completed_benchmarks = _completed_benchmarks(selected, factory_counts, estimates)
+        missing = [
+            benchmark.name
+            for benchmark in selected
+            if benchmark.name not in completed_benchmarks
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "Stored spacetime-volume results are missing for "
+                + ", ".join(missing)
+                + "; rerun with --source generate."
+            )
+        manifest, relative_records = _write_checkpoint(
+            output_path,
+            experiment,
+            selected,
+            selected,
+            chosen_methods,
+            None,
+            factory_counts,
+            records,
+            estimates,
+            completed_benchmarks,
+            status="existing",
+        )
+        manifest["source_mode"] = "existing"
+        write_json(output_path / "manifest.json", manifest)
+        return {
+            "manifest": manifest,
+            "records": records,
+            "relative_records": relative_records,
+        }
+
     resource_estimation = _check_resource_package()
     from qiskit import QuantumCircuit
     from .resource_estimators import superstaq_estimate
 
-    factory_counts = tuple(int(value) for value in experiment.settings["magic_state_factories"])
     jobs_by_benchmark: dict[str, list[tuple[Any, str, Path]]] = {
         benchmark.name: [] for benchmark in selected
     }
@@ -307,7 +377,7 @@ def run(
         )
 
     records = read_records_csv(output_path / "metrics.csv")
-    estimates: dict[tuple[str, int, str], dict[str, Any]] = _estimates_from_records(records)
+    estimates = _estimates_from_records(records)
     completed_benchmarks: set[str] = _completed_benchmarks(
         selected, factory_counts, estimates
     )
@@ -374,8 +444,10 @@ def run(
         completed_benchmarks,
         status="complete",
     )
+    manifest["source_mode"] = source
+    write_json(output_path / "manifest.json", manifest)
     return {"manifest": manifest, "records": records, "relative_records": relative_records}
 
 
 if __name__ == "__main__":
-    run_cli("space_volume_analysis", run)
+    run_cli("space_volume_analysis", run, include_source=True)

@@ -31,6 +31,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output", type=Path, default=Path("micro_artifact/results/run"))
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--gpu", type=int, default=0)
+    run.add_argument(
+        "--source",
+        choices=("existing", "generate"),
+        default="existing",
+        help="read reusable stored results by default; use generate to rerun synthesis",
+    )
     return parser
 
 
@@ -56,7 +62,15 @@ def main(argv: list[str] | None = None) -> None:
             if result["mismatches"]:
                 print(f"Mismatches: {len(result['mismatches'])}")
             return
-        result = run_paper(args.experiment, args.output, args.benchmarks, args.seed, args.gpu, args.methods)
+        result = run_paper(
+            args.experiment,
+            args.output,
+            args.benchmarks,
+            args.seed,
+            args.gpu,
+            args.methods,
+            reuse_existing=args.source == "existing",
+        )
         print(f"Completed {result['manifest']['record_count']} records; wrote {args.output}")
     except (KeyError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

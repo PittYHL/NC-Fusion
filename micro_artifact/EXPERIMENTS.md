@@ -16,8 +16,8 @@ export PYTHONPATH=src:legacy:.
 The artifact uses the following optional dependencies for specific sections:
 
 - `ncf-two` requires Docker and the configured Synthetiq image.
-- The optimizer comparison requires locally built `tzap` and a cloned
-  T-Optimizer repository.
+- The optimizer comparison uses PyZX plus the external T-Zap and T-Optimizer
+  tools. They can be installed manually or with the opt-in installer below.
 - The spacetime-volume experiment requires Infleqtion's
   `resource-superstaq` package at revision
   `717cbbfc62e558be3f2f9acb512e992d3cd43529`.
@@ -89,8 +89,8 @@ The canonical single-qubit QASM files are under
 ```
 
 `single_qubit_result` and `two_qubit_result` are the producer evaluations.
-They can either read stored QASM (`--source existing`) or regenerate it
-(`--source generate`). Downstream analytical estimation reads the producer
+They read stored QASM by default. Pass `--source generate` to regenerate the
+selected producer inputs. Downstream analytical estimation reads the producer
 CSV at the fixed path `micro_artifact/results/runs/single_qubit_result` or
 `two_qubit_result`; use those default output directories when the result will
 be consumed by another experiment.
@@ -100,11 +100,12 @@ The single-qubit producer records the NC-Fusion unitary count,
 `original_rz_gate_count`, and `compilation_time_seconds`. Analytical
 estimation uses the first two counts directly. Existing-data workflows reuse
 the stored QASM and recorded compilation time whenever both are available;
-otherwise they compile the missing circuit and mark the row as generated.
+generation is performed only when explicitly requested.
 
-The two sensitivity studies always regenerate their circuits and never save
-QASM. In both ablations, the full NC-Fusion arm reuses the single-qubit
-producer QASM when it is available; the other ablation arms are regenerated.
+Sensitivity and ablation experiments read stored result CSVs by default. Pass
+`--source generate` to rerun them. Generated sensitivity circuits remain
+in-memory only; ablation circuits are not written to the canonical QASM
+directory. The scheduling ablation can reuse the single-qubit producer QASM.
 
 ## 1. Single-qubit result (Section 5.2)
 
@@ -119,7 +120,7 @@ compressor's combined rotation count: one for each nonempty transformed group
 plus one for every commuting Pauli rotation. The separated
 `ncf_unitaries_generated` and `ncf_rz_generated` fields apply only to the
 two-qubit analytical estimate.
-`original_rz_gate_count` follows `2025_summer_original/main_alg.py:159` and is
+`original_rz_gate_count` follows the original NC-Fusion implementation and is
 the non-identity Pauli count, not the literal number of transpiled QASM `rz`
 instructions.
 
@@ -136,6 +137,31 @@ PYTHONPATH=src:legacy:. python -m micro_artifact.single_qubit_result \
   --source existing \
   --benchmark LiH \
   --benchmark Ising-2D-30 \
+  --output micro_artifact/results/runs/single_qubit_result
+```
+
+Use `--method` to refresh only one comparison arm for a selected benchmark.
+The NC-Fusion circuit remains the candidate: `rustiq` and `phoenix` refresh
+only their corresponding comparison, while `ncf-one` refreshes the default
+GridSynth comparison. Repeat `--method` for multiple arms; omit it to run all
+GridSynth, Rustiq, and Phoenix comparisons. Previously recorded comparison
+fields for the benchmark are retained when a partial method run is merged.
+
+For example:
+
+```bash
+# Only LiH versus Rustiq
+PYTHONPATH=src:legacy:. python -m micro_artifact.single_qubit_result \
+  --source existing \
+  --benchmark LiH \
+  --method rustiq \
+  --output micro_artifact/results/runs/single_qubit_result
+
+# Only LiH NC-Fusion versus GridSynth
+PYTHONPATH=src:legacy:. python -m micro_artifact.single_qubit_result \
+  --source existing \
+  --benchmark LiH \
+  --method ncf-one \
   --output micro_artifact/results/runs/single_qubit_result
 ```
 
@@ -162,22 +188,37 @@ benchmarks through the configured Table 4 and scalability Hamiltonians.
 
 This produces the Table 4 comparison for GridSynth, Rustiq, single-qubit
 NC-Fusion, and two-qubit NC-Fusion by following
-`2025summer/same_error.py`. It records T-count, T-depth, and Clifford count
+reference same-error workflow. It records T-count, T-depth, and Clifford count
 for all 11 Table 4 benchmarks and reports the average reduction of NCF-two
 relative to each other method. The NCF-two threshold is per rotation: `0.11`
 for Ising benchmarks and `0.12` for the other benchmarks. Existing QASM is
 used whenever available; missing circuits are generated and saved.
 
-Run the automatic reuse/generation workflow with:
+By default the runner reads the existing QASM files and does not synthesize
+missing inputs. Run the stored-data workflow with:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.two_qubit_result \
   --output micro_artifact/results/runs/two_qubit_result
 ```
 
-To require stored inputs or force regeneration, use `--source existing` or
-`--source generate`. Docker and the Synthetiq configuration are required when
-an NCF-two circuit must be generated:
+Select one or more benchmarks with repeated `--benchmark` options. Short
+directory names such as `IS-2D-30` and `Hei-2D-60` are accepted and mapped to
+their canonical benchmark names. Existing rows for other benchmarks remain in
+the merged CSV:
+
+```bash
+PYTHONPATH=src:legacy:. python -m micro_artifact.two_qubit_result \
+  --source existing \
+  --benchmark LiH \
+  --benchmark IS-2D-30 \
+  --output micro_artifact/results/runs/two_qubit_result
+```
+
+To regenerate all selected inputs, use `--source generate`. The optional
+`--source auto` mode reuses files when present and generates missing inputs.
+Docker and the Synthetiq configuration are required when an NCF-two circuit
+must be generated:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.two_qubit_result \
@@ -228,22 +269,12 @@ only the two-qubit model, pass `--method ncf-two`:
 PYTHONPATH=src:legacy:. python -m micro_artifact.analytical_estimation \
   --method ncf-one \
   --benchmark LiH \
-  --epsilon 0.1 \
-  --epsilon 0.01 \
   --output micro_artifact/results/runs/analytical_estimation
 ```
 
 Use `--method ncf-two` and the two-qubit producer for the two-qubit model.
-Without `--epsilon`, the sweep is `10^-1` through `10^-9`. The model uses
-
-```text
-GridSynth:              N_RZ * 3 * log2(1 / epsilon)
-single-qubit NC-Fusion: N_U * 3 * log2(1 / epsilon_scaled)
-two-qubit NC-Fusion:    N_U * 15 * log_base_2.76(1 / epsilon_scaled)
-                         + N_RZ_NCF * 3 * log2(1 / epsilon_scaled)
-single precision:       epsilon_scaled = epsilon * N_RZ / N_U
-two precision:          epsilon_scaled = epsilon * N_RZ / (N_U + N_RZ_NCF)
-```
+The analytical sweep always evaluates the fixed nine precisions from `10^-1`
+through `10^-9`; precision selection is not a command-line option.
 
 The average reduction table is written to `metrics.csv`. The figures are
 `estimated_t_count.png` and `t_count_reduction.png`. The full per-benchmark
@@ -251,12 +282,14 @@ estimates and average gate counts are not emitted in the artifact result. NC-Fus
 
 ## 4. Window-size sensitivity (Section 5.5)
 
-This sweep always recompiles every requested window and does not save QASM:
+This sweep does not save QASM. Use `--source generate` to recompile every
+requested window:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.window_size_sensitivity \
   --benchmark LiH \
   --method ncf-one \
+  --source generate \
   --output micro_artifact/results/runs/window_size_sensitivity
 ```
 
@@ -264,14 +297,15 @@ With no selections, it evaluates LiH, H2O, Ising-2D-60, and
 Heisenberg-2D-60 for both NC-Fusion budgets. Single-qubit uses windows
 `full, 128, 64, 32, 16, 8, 4` at threshold `0.005`; two-qubit uses windows
 `full, 256, 128, 64, 32, 16` at threshold `0.03` for LiH/H2O and `0.07` for
-the two 60-qubit spin benchmarks. It regenerates circuits in memory and does
+the two 60-qubit spin benchmarks. By default, stored sweep results are read;
+use `--source generate` to regenerate circuits in memory. Generated runs do
 not save QASM. Rows are checkpointed after each window. `relative_metrics.csv`
 reports T-count, T-depth, Clifford-count, and compilation-time percentages
 relative to the corresponding `full` window, including per-window averages.
 
 ## 5. Pauli-string order sensitivity (Section 5.6)
 
-This experiment follows `2025summer/random_order.py` with a single-qubit
+This experiment follows the reference randomized-order workflow with a single-qubit
 window of 4. Each invocation appends new randomized runs to
 `metrics.csv`, checkpoints after every completed benchmark, and recomputes
 `summary.csv`; no randomized QASM is saved. The summary reports the average,
@@ -281,6 +315,7 @@ Run one new order per benchmark with:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.pauli_string_order_sensitivity \
+  --source generate \
   --output micro_artifact/results/runs/pauli_string_order_sensitivity
 ```
 
@@ -290,6 +325,7 @@ multiple new orders per invocation with, for example:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.pauli_string_order_sensitivity \
+  --source generate \
   --benchmark LiH \
   --benchmark H2O \
   --runs 10 \
@@ -299,8 +335,9 @@ PYTHONPATH=src:legacy:. python -m micro_artifact.pauli_string_order_sensitivity 
   --output micro_artifact/results/runs/pauli_string_order_sensitivity
 ```
 
-Repeated commands preserve existing rows and append new run IDs. The raw
-records are in `metrics.csv`; the per-benchmark and accumulated `Average`
+By default, existing randomized runs are read. Use `--source generate` to
+append new run IDs; repeated generated commands preserve existing rows. The
+raw records are in `metrics.csv`; the per-benchmark and accumulated `Average`
 statistics are in `summary.csv`. The source-script precision is `0.001`; use
 `--precision 0.02` only when intentionally testing a different synthesis
 threshold.
@@ -312,6 +349,7 @@ The three variants are `scheduling`, `commuting-grouping`, and
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.components_abalation \
+  --source generate \
   --benchmark LiH \
   --variant scheduling \
   --variant commuting-grouping \
@@ -321,13 +359,13 @@ PYTHONPATH=src:legacy:. python -m micro_artifact.components_abalation \
 
 If the default single-qubit producer contains LiH, the `scheduling` row is
 loaded from that producer QASM and retains its recorded compilation time. The
-`commuting-grouping` arm compresses `new_paulis`, `commute_paulis`,
-and `circuits` without `reorder_pauli_groups`; the final arm passes only
-`no_commute_new_paulis`, `no_commute_commute_paulis`, and
-`no_commute_circuits` to `compressor_circuit`. The other variants are
-regenerated for the ablation. Ablation circuits are not written to the
-canonical QASM input directory. Results are merged by benchmark, variant,
-budget, window, Trotter settings, threshold, and Pauli-order seed.
+The `commuting-grouping` arm skips the independent-group reordering stage, and
+the `anti-commuting-grouping` arm skips both commuting grouping and reordering.
+By default, stored ablation results are read. Use `--source generate` to
+regenerate the variants. Ablation circuits are not written to the canonical
+QASM input directory. Results are merged by
+benchmark, variant, budget, window, Trotter settings, threshold, and
+Pauli-order seed.
 The run also writes `relative_metrics.csv` and
 `components_abalation_relative_reductions.png`. These normalize each
 component's GridSynth reduction to the scheduling (NCF-one) reduction, so
@@ -347,7 +385,6 @@ scaled reduction for each metric.
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.precision_abalation \
   --benchmark LiH \
-  --method ncf-one \
   --output micro_artifact/results/runs/precision_abalation
 ```
 
@@ -365,6 +402,7 @@ rotation circuit `rz_qc`:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.trotter_error \
+  --source generate \
   --benchmark LiH \
   --method gridsyn \
   --method ncf-one \
@@ -375,8 +413,9 @@ PYTHONPATH=src:legacy:. python -m micro_artifact.trotter_error \
   --output micro_artifact/results/runs/trotter_error
 ```
 
-For Trotter step 1, stored `c+t.qasm` is reused when present. The uploaded
-`micro_artifact/results/runs/trotter_error/U_exact.npy` is used as the exact
+By default, stored circuits are read. Use `--source generate` to regenerate
+all selected Trotter circuits. For Trotter step 1, stored `c+t.qasm` is reused
+when present. The uploaded `micro_artifact/results/runs/trotter_error/U_exact.npy` is used as the exact
 unitary cache. Other step counts are compiled for the evaluation and are not
 saved as canonical producer QASM, but both generated forms are saved under
 `trotter_error/circuits/<benchmark>/` with `trotter_steps_<N>` in each
@@ -396,6 +435,7 @@ configured logical error rates:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.application_level_fidelity \
+  --source generate \
   --benchmark LiH \
   --method gridsyn \
   --method ncf-one \
@@ -404,10 +444,9 @@ PYTHONPATH=src:legacy:. python -m micro_artifact.application_level_fidelity \
   --output micro_artifact/results/runs/application_level_fidelity
 ```
 
-Step 1 reuses the canonical circuits. For steps above 1, this runner first
-loads matching step-specific QASM from the Trotter-error output; if it is not
-available, it regenerates and saves both RZ and Clifford+T circuits under the
-fidelity run directory. In all cases, `evolution_time` remains 1.0 while
+By default, stored circuits are read. Use `--source generate` to regenerate
+all selected circuits. Generated runs save both RZ and Clifford+T circuits
+under the fidelity run directory. In all cases, `evolution_time` remains 1.0 while
 `Trotter_steps` is the selected step count.
 
 This experiment runs LiH at Trotter steps 1, 5, 10, and 20 by default. GPU
@@ -423,34 +462,73 @@ only matching rows and preserve all other results.
 ## 10. T-count optimizer comparison (Section 5.9)
 
 This workflow compares GridSynth, T-Zap, Pauli rotation merging (T-optimizer),
-and PyZX. Build or clone
-the external tools first. Omitting `--benchmark` runs all 13 benchmarks: the
+and PyZX. PyZX is included in `.[paper]` and can also be installed through the
+dedicated `.[optimizers]` extra. T-Zap is a Rust executable, while
+T-Optimizer is a source checkout that also needs QuaEC, NumPy, `gmpy2`, and
+Cython. Install all missing optimizer dependencies automatically with:
+
+```bash
+PYTHONPATH=src:legacy:. python -m micro_artifact.install_optimizers
+```
+
+This places the T-Optimizer checkout under `micro_artifact/.external/` and
+prints the resulting paths. The installer requires network access, Git, and
+Rust/Cargo for T-Zap. It is never invoked by existing-result workflows. To
+install only selected tools, repeat `--method` with `pyzx`, `tzap`, or
+`t-optimizer`.
+
+Alternatively, install the tools manually:
+
+```bash
+python3 -m pip install -e ".[paper,optimizers]"
+cargo install tzap-opt
+git clone https://github.com/iqubit-org/T-Optimizer micro_artifact/.external/T-Optimizer
+git clone https://github.com/cgranade/python-quaec micro_artifact/.external/QuaEC
+python3 -m pip install micro_artifact/.external/QuaEC numpy gmpy2 Cython
+```
+
+Omitting `--benchmark` runs all 13 benchmarks: the
 11 Table 4 benchmarks plus H2S and CO2. Use one output directory so all
 intermediate files and the final relative report remain under
 `t_count_optimizer_relative`:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.t_count_methods_comparison \
+  --source generate \
   --method tzap \
   --method t-optimizer \
   --method pyzx \
-  --tzap-bin /path/to/tzap \
-  --t-optimizer-root /path/to/T-Optimizer \
+  --install-missing \
   --output micro_artifact/results/runs/t_count_optimizer_relative
 ```
 
-Repeat `--method` to select a subset of `gridsyn`, `tzap`, `t-optimizer`, and
-`pyzx`; repeat `--benchmark` to select a subset of the 13. Existing
-GridSynth RZ and
-Clifford+T QASM are used as the reference when available, including the
-recorded compilation time. The optimizer intermediates are written under the
+`--install-missing` is an opt-in shortcut for generated runs; it installs only
+the selected missing tools before starting. When using manually installed
+tools, omit `--install-missing` and pass `--tzap-bin` and
+`--t-optimizer-root` instead. Repeat `--method` to select a subset of `gridsyn`, `tzap`, `t-optimizer`, and
+`pyzx`; repeat `--benchmark` to select a subset of the 13. Full benchmark names
+and the short aliases `IS-2D-*` and `Hei-2D-*` are accepted. For example, this
+runs only LiH and Ising-2D-30:
+
+```bash
+PYTHONPATH=src:legacy:. python -m micro_artifact.t_count_methods_comparison \
+  --source generate \
+  --benchmark LiH \
+  --benchmark IS-2D-30 \
+  --method tzap \
+  --output micro_artifact/results/runs/t_count_optimizer_relative
+```
+
+Existing results
+and GridSynth QASM are read by default. Use `--source generate` to rerun the
+selected optimizer workflows. The optimizer intermediates are written under the
 run directory's `circuits/` subdirectory, not under the canonical producer
 directory. When T-Zap is selected, `tzap_reductions.csv` reports per-benchmark
 and arithmetic-average T-count, T-depth, and Clifford-count reductions versus
 fresh GridSynth synthesis of the same stored `grid_rz` QASM. The T-Zap path is
 `grid_rz -> tzap pre -> per-RZ GridSynth synthesis -> tzap post`; T-count and
 T-depth both count `t` and `tdg`, matching `ncf/NCF/tzap_test.py`.
-The PyZX arm follows `2025summer/pyzx_path.py`: it reads `grid_c+t` QASM,
+The PyZX arm follows the reference PyZX workflow: it reads `grid_c+t` QASM,
 runs `full_reduce`, removes extracted `swap` lines, and converts only exact
 `pi/4`-multiple RZ phases back to Clifford+T before measuring reductions.
 PyZX on H2S and CO2 can take more than one day. CO2 may also fail during
@@ -462,6 +540,10 @@ For the consolidated relative report over all 13 benchmarks, run:
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.t_count_optimizer_relative
 ```
+
+The consolidated report also accepts repeated `--benchmark` options, for
+example `--benchmark LiH --benchmark Hei-2D-60`; omitted options process all 13
+benchmarks. Unselected rows already present in the CSV are preserved.
 
 This compares T-Zap, Pauli rotation merging (T-optimizer), PyZX, and
 single-qubit NC-Fusion against
@@ -488,10 +570,24 @@ for all 13 configured benchmarks:
 
 ```bash
 PYTHONPATH=src:legacy:. python -m micro_artifact.space_volume_analysis \
+  --source generate \
   --output micro_artifact/results/runs/space_volume_analysis
 ```
 
-The estimator evaluates one and ten magic-state factories using
+Select one or more benchmarks with repeated `--benchmark` options. Full names
+and short aliases such as `IS-2D-30` and `Hei-2D-60` are accepted; omitted
+options retain the default of all 13 benchmarks:
+
+```bash
+PYTHONPATH=src:legacy:. python -m micro_artifact.space_volume_analysis \
+  --source existing \
+  --benchmark LiH \
+  --benchmark IS-2D-30 \
+  --output micro_artifact/results/runs/space_volume_analysis
+```
+
+By default, existing volume estimates are read. Use `--source generate` to
+recompute them. The estimator evaluates one and ten magic-state factories using
 `<benchmark>_grid_c+t.qasm` and `<benchmark>_ncf_c+t.qasm`. It records
 physical qubits, serial and parallel time, primitive moments, error, and
 physical-qubit-time volume in `metrics.csv`. The relative report in
@@ -509,11 +605,13 @@ The lower-level runner can execute the configured paper experiments directly:
 PYTHONPATH=src:legacy:. python -m ncfusion run table4 \
   --benchmark LiH \
   --method gridsyn \
+  --source existing \
   --output micro_artifact/results/runs/table4_lih
 
 PYTHONPATH=src:legacy:. python -m ncfusion run scalability \
   --benchmark Ising-2D-30 \
   --method ncf-one \
+  --source generate \
   --output micro_artifact/results/runs/scalability_is2d30
 ```
 

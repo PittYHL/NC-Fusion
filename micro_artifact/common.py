@@ -119,11 +119,17 @@ def missing_evaluation(name: str, details: str) -> None:
     )
 
 
-def add_cli_arguments(parser: argparse.ArgumentParser, *, include_source: bool = False) -> None:
+def add_cli_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_source: bool = False,
+    include_method: bool = True,
+) -> None:
     """Add options shared by all evaluation modules."""
 
     parser.add_argument("--benchmark", action="append", dest="benchmarks")
-    parser.add_argument("--method", action="append", dest="methods")
+    if include_method:
+        parser.add_argument("--method", action="append", dest="methods")
     parser.add_argument("--output", type=Path, default=Path("micro_artifact/results/runs"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--gpu", type=int, default=0)

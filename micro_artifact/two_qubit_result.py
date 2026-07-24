@@ -35,6 +35,38 @@ DEFAULT_OUTPUT = Path("micro_artifact/results/runs/two_qubit_result")
 BENCHMARKS = tuple(find_experiment("table4").benchmarks)
 METHODS = ("gridsyn", "rustiq", "ncf-one", "ncf-two")
 METRICS = ("t_count", "t_depth", "clifford_count")
+BENCHMARK_ALIASES = {
+    "is-2d-30": "Ising-2D-30",
+    "is-2d-60": "Ising-2D-60",
+    "is-3d-30": "Ising-3D-30",
+    "is-3d-60": "Ising-3D-60",
+    "hei-2d-30": "Heisenberg-2D-30",
+    "hei-2d-60": "Heisenberg-2D-60",
+    "hei-3d-30": "Heisenberg-3D-30",
+    "hei-3d-60": "Heisenberg-3D-60",
+}
+
+
+def _selected_benchmarks(requested: list[str] | None) -> list[str]:
+    """Canonicalize and validate repeated ``--benchmark`` selections."""
+
+    if requested is None:
+        return list(BENCHMARKS)
+    canonical_names = {name.lower(): name for name in BENCHMARKS}
+    selected: list[str] = []
+    for value in requested:
+        key = value.strip().lower()
+        name = BENCHMARK_ALIASES.get(key, canonical_names.get(key))
+        if name is None:
+            raise ValueError(
+                f"unknown two-qubit benchmark {value!r}; choose from "
+                + ", ".join(BENCHMARKS)
+            )
+        if name not in selected:
+            selected.append(name)
+    if not selected:
+        raise ValueError("at least one two-qubit benchmark must be selected")
+    return selected
 
 
 def _threshold(benchmark: Any) -> float:
@@ -184,7 +216,7 @@ def run(
     methods: list[str] | None = None,
     seed: int = 0,
     gpu: int = 0,
-    source: str = "auto",
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Write the 11-benchmark comparison without running unless invoked."""
 
@@ -193,7 +225,7 @@ def run(
     chosen_methods = list(methods or METHODS)
     if set(chosen_methods) != set(METHODS):
         raise ValueError("two_qubit_result records gridsyn, rustiq, ncf-one, and ncf-two together")
-    selected = list(BENCHMARKS if benchmarks is None else benchmarks)
+    selected = _selected_benchmarks(benchmarks)
     selected_specs = [find_benchmark(name) for name in selected]
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -288,7 +320,7 @@ def run(
         "methods": METHODS,
         "threshold_policy": "0.11 per NCF-two rotation for Ising benchmarks; 0.12 per NCF-two rotation otherwise",
         "ncf_two_normalized": 0,
-        "reuse_policy": "use existing QASM whenever present; generate missing inputs and save them",
+        "reuse_policy": "read existing QASM by default; --source generate forces regeneration",
         "csv_merge_policy": "replace matching benchmark rows and append new benchmarks; rebuild AVERAGE rows",
         "qasm_saved_on_generation": True,
         "record_count": len(rows),
@@ -307,7 +339,12 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description="Run the two-qubit NC-Fusion comparison")
     add_cli_arguments(parser)
     parser.set_defaults(output=DEFAULT_OUTPUT)
-    parser.add_argument("--source", choices=("auto", "existing", "generate"), default="auto")
+    parser.add_argument(
+        "--source",
+        choices=("existing", "generate", "auto"),
+        default="existing",
+        help="read stored QASM by default; use generate to regenerate all inputs",
+    )
     args = parser.parse_args()
     try:
         result = run(

@@ -246,7 +246,6 @@ def run(
     output: Path | str = "micro_artifact/results/runs/precision_abalation",
     *,
     benchmarks: list[str] | None = None,
-    methods: list[str] | None = None,
     seed: int = 0,
     gpu: int = 0,
     budget: int = 1,
@@ -261,8 +260,6 @@ def run(
 
     if budget != 1:
         raise ValueError("precision_abalation uses the single-qubit QASM set (budget=1)")
-    if methods and any(method != "ncf-one" for method in methods):
-        raise ValueError("precision_abalation uses only method ncf-one")
     selected_benchmarks = list(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -335,7 +332,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run the NC-Fusion precision ablation from stored QASM"
     )
-    add_cli_arguments(parser)
+    add_cli_arguments(parser, include_method=False)
     parser.add_argument("--budget", type=int, choices=(1,), default=1)
     parser.add_argument("--window", type=int)
     parser.add_argument("--error-threshold", type=float, default=0.001)
@@ -348,7 +345,6 @@ def main(argv: list[str] | None = None) -> None:
         result = run(
             output=args.output,
             benchmarks=args.benchmarks,
-            methods=args.methods,
             seed=args.seed,
             gpu=args.gpu,
             budget=args.budget,

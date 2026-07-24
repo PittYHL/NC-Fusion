@@ -18,7 +18,7 @@ producer data where applicable:
 * `analytical_estimation.py` (paper Section 5.4 formulas consuming producer
   unitary/RZ counts)
 * `components_abalation.py` (paper Section 5.6.1, using the three grouping/
-  scheduling variants from `main_alg.py`)
+  and scheduling variants)
 * `precision_abalation.py` (paper Section 5.6.2, `fix_error_threshold=0`
   versus `1`)
 * `trotter_error.py` (paper Section 5.7.1, using stored `c+t` at step 1 and generated `rz` circuits otherwise)

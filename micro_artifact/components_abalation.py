@@ -374,6 +374,7 @@ def run(
     trotter_steps: int = 1,
     evolution_time: float = 1.0,
     pauli_order_seed: int | None = None,
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Run the three component configurations and write circuit metrics."""
 
@@ -390,6 +391,8 @@ def run(
         raise ValueError("window, t_budget, trotter_steps, and error_threshold must be positive")
     if evolution_time == 0:
         raise ValueError("evolution_time must be non-zero")
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
 
     import numpy as np
 
@@ -403,6 +406,36 @@ def run(
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
     records = _read_records(output_path / "metrics.csv")
+
+    if source == "existing":
+        if not records:
+            raise FileNotFoundError(
+                "No stored component-ablation results were found; rerun with "
+                "--source generate."
+            )
+        relative = _relative_records(records, selected_variants)
+        relative_averages = _relative_average_records(relative, selected_variants)
+        relative_records = [*relative, *relative_averages]
+        relative_plot = _write_relative_plot(output_path, relative, relative_averages)
+        write_records_csv(output_path / "relative_metrics.csv", relative_records)
+        manifest = {
+            "artifact_version": "0.1.0",
+            "evaluation": "components_abalation",
+            "benchmarks": selected_benchmarks,
+            "variants": selected_variants,
+            "source_mode": "existing",
+            "record_count": len(records),
+            "relative_metrics_file": str(output_path / "relative_metrics.csv"),
+            "relative_plot": str(relative_plot) if relative_plot is not None else None,
+            "csv_merge_policy": "read existing checkpointed results",
+        }
+        write_json(output_path / "manifest.json", manifest)
+        return {
+            "manifest": manifest,
+            "records": records,
+            "relative_records": relative_records,
+            "relative_plot": relative_plot,
+        }
 
     def add_record(record: dict[str, object]) -> None:
         nonlocal records
@@ -594,6 +627,7 @@ def run(
         "paper_section": "5.6.1",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
+        "source_mode": source,
         "benchmarks": selected_benchmarks,
         "variants": selected_variants,
         "variant_definitions": {
@@ -620,7 +654,7 @@ def run(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the NC-Fusion component ablation")
-    add_cli_arguments(parser)
+    add_cli_arguments(parser, include_source=True)
     parser.add_argument("--variant", action="append", dest="variants", choices=DEFAULT_VARIANTS)
     parser.add_argument("--budget", type=int, choices=(1, 2), default=1)
     parser.add_argument("--window", type=int, default=4)
@@ -645,6 +679,7 @@ def main(argv: list[str] | None = None) -> None:
             trotter_steps=args.trotter_steps,
             evolution_time=args.evolution_time,
             pauli_order_seed=args.pauli_order_seed,
+            source=args.source,
         )
     except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

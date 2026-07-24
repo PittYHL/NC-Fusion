@@ -100,12 +100,32 @@ hardware substitution. Workloads containing `ncf-two` require Docker and the
 configured Synthetiq image; the CLI stops with an actionable error if those
 prerequisites are not available.
 
-For the T-count optimizer comparison, use the dedicated entry point and pass
-the locally built/cloned external tools:
+For the T-count optimizer comparison, PyZX is installed by the paper extra.
+T-Zap and T-Optimizer are external tools. They can be installed automatically
+by the artifact (the command requires Git and Rust/Cargo):
+
+```bash
+PYTHONPATH=src:legacy:. python -m micro_artifact.install_optimizers
+```
+
+The default T-Optimizer checkout is stored under
+`micro_artifact/.external/T-Optimizer`. Alternatively, install the tools
+manually with `cargo install tzap-opt`, clone
+`https://github.com/iqubit-org/T-Optimizer` and
+`https://github.com/cgranade/python-quaec`, then run
+`python3 -m pip install <QuaEC-checkout> numpy gmpy2 Cython`.
+
+For a generated run, `--install-missing` performs this setup automatically;
+existing-result runs never install or download anything. The dedicated entry
+point can also receive locally built/cloned external tools explicitly:
 
 ```bash
 PYTHONPATH=src:. python -m micro_artifact.t_count_methods_comparison \
-  --benchmark H2 \
+  --source generate \
+  --benchmark LiH \
+  --method tzap \
+  --method t-optimizer \
+  --method pyzx \
   --tzap-bin /path/to/tzap \
   --t-optimizer-root /path/to/T-Optimizer \
   --output micro_artifact/results/runs/t-count-methods

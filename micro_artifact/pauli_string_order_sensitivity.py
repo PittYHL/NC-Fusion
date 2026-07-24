@@ -267,6 +267,7 @@ def run(
     gpu: int = 1,
     runs: int = 1,
     synthesis_error: float = 0.001,
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Append ``runs`` randomized executions per benchmark to the CSVs."""
 
@@ -274,11 +275,34 @@ def run(
         raise ValueError("runs must be a positive integer")
     if synthesis_error <= 0:
         raise ValueError("synthesis_error must be positive")
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
     if methods and any(method != "ncf-one" for method in methods):
         raise ValueError("Pauli-string order sensitivity only supports method ncf-one")
 
     output_path = Path(output)
     selected_names = _canonical_benchmarks(benchmarks)
+    if source == "existing":
+        rows = _read_rows(output_path / "metrics.csv")
+        if not rows:
+            raise FileNotFoundError(
+                "No stored Pauli-order results were found; rerun with "
+                "--source generate."
+            )
+        summary = _summary(rows)
+        manifest = {
+            "artifact_version": "0.1.0",
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "benchmarks": selected_names,
+            "runs_added": 0,
+            "source_mode": "existing",
+            "append_policy": "read existing checkpointed results",
+            "metrics_csv": str(output_path / "metrics.csv"),
+            "summary_csv": str(output_path / "summary.csv"),
+        }
+        _checkpoint(output_path, rows, summary, manifest)
+        _print_summary(summary)
+        return {"manifest": manifest, "records": rows, "summary": summary}
     selected_specs = [find_benchmark(name) for name in selected_names]
     source_script = _source_script()
 
@@ -311,6 +335,7 @@ def run(
         "gpu": gpu,
         "seed_offset": seed,
         "runs_added": runs,
+        "source_mode": source,
         "append_policy": "existing rows are preserved; each completed benchmark is checkpointed",
         "csv_merge_policy": "append new benchmark/run_id rows; accumulated summary is rebuilt",
         "metrics_csv": str(output_path / "metrics.csv"),
@@ -374,6 +399,12 @@ def _main() -> None:
     add_cli_arguments(parser)
     parser.set_defaults(output=DEFAULT_OUTPUT, gpu=1)
     parser.add_argument(
+        "--source",
+        choices=("existing", "generate"),
+        default="existing",
+        help="read stored randomized runs by default; use generate to add new runs",
+    )
+    parser.add_argument(
         "--runs",
         type=int,
         default=1,
@@ -397,6 +428,7 @@ def _main() -> None:
             gpu=args.gpu,
             runs=args.runs,
             synthesis_error=args.synthesis_error,
+            source=args.source,
         )
     except (KeyError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

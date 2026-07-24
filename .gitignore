@@ -13,6 +13,7 @@ synthetiq_out/
 # Generated artifacts and logs
 micro_artifact/results/runs/*
 !micro_artifact/results/runs/.gitkeep
+micro_artifact/.external/
 micro_artifact/results/smoke/
 *.log
 slurm-*.out

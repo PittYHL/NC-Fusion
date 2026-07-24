@@ -39,6 +39,42 @@ from .pyzx import convert_pyzx_rz_to_clifford_t, optimize as optimize_pyzx
 STATUS = "available"
 DEFAULT_METHODS = ("gridsyn", "tzap", "pyzx", "t-optimizer")
 DEFAULT_BENCHMARKS = tuple(find_experiment("table4").benchmarks) + ("H2S", "CO2")
+BENCHMARK_ALIASES = {
+    "is-2d-30": "Ising-2D-30",
+    "is-2d-60": "Ising-2D-60",
+    "is-3d-30": "Ising-3D-30",
+    "is-3d-60": "Ising-3D-60",
+    "hei-2d-30": "Heisenberg-2D-30",
+    "hei-2d-60": "Heisenberg-2D-60",
+    "hei-3d-30": "Heisenberg-3D-30",
+    "hei-3d-60": "Heisenberg-3D-60",
+}
+
+
+def _selected_benchmarks(requested: list[str] | None) -> list[str]:
+    """Return canonical, deduplicated optimizer benchmarks.
+
+    The command line accepts both the full benchmark names and the short
+    directory-style ``IS-*``/``Hei-*`` names used by the artifact circuits.
+    """
+
+    if requested is None:
+        return list(DEFAULT_BENCHMARKS)
+    canonical = {name.lower(): name for name in DEFAULT_BENCHMARKS}
+    selected: list[str] = []
+    for value in requested:
+        key = value.strip().lower()
+        name = BENCHMARK_ALIASES.get(key, canonical.get(key))
+        if name is None:
+            choices = ", ".join(DEFAULT_BENCHMARKS)
+            raise ValueError(
+                f"unknown optimizer benchmark {value!r}; choose from: {choices}"
+            )
+        if name not in selected:
+            selected.append(name)
+    if not selected:
+        raise ValueError("at least one optimizer benchmark must be selected")
+    return selected
 
 
 def _canonical_methods(methods: list[str] | None) -> tuple[str, ...]:
@@ -196,6 +232,8 @@ def run(
     evolution_time: float = 1.0,
     tzap_bin: str | None = None,
     t_optimizer_root: str | Path | None = None,
+    source: str = "existing",
+    install_missing: bool = False,
 ) -> dict[str, Any]:
     """Run the requested external optimizer comparison."""
 
@@ -203,13 +241,57 @@ def run(
         raise ValueError("error_threshold must be positive")
     if t_budget < 1 or trotter_steps < 1:
         raise ValueError("t_budget and trotter_steps must be positive")
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
+    if install_missing and source != "generate":
+        raise ValueError("--install-missing requires --source generate")
 
-    selected_benchmarks = benchmarks or list(DEFAULT_BENCHMARKS)
+    selected_benchmarks = _selected_benchmarks(benchmarks)
     selected_methods = _canonical_methods(methods)
     output_path = Path(output)
+    if source == "existing":
+        cached_records = read_records_csv(output_path / "metrics.csv")
+        cached_benchmarks = {
+            str(row.get("benchmark", ""))
+            for row in cached_records
+            if not str(row.get("benchmark", "")).startswith("AVERAGE_")
+        }
+        missing = [benchmark for benchmark in selected_benchmarks if benchmark not in cached_benchmarks]
+        if missing:
+            raise FileNotFoundError(
+                "Stored optimizer results are missing for "
+                + ", ".join(missing)
+                + "; rerun with --source generate."
+            )
+        manifest_path = output_path / "manifest.json"
+        manifest = {}
+        if manifest_path.is_file():
+            import json
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(
+            {
+                "source_mode": "existing",
+                "benchmarks": selected_benchmarks,
+                "methods": selected_methods,
+            }
+        )
+        return {"manifest": manifest, "records": cached_records}
+
     circuit_dir = output_path / "circuits"
     circuit_dir.mkdir(parents=True, exist_ok=True)
     tzap_command = tzap_bin or os.environ.get("TZAP_BIN", "tzap")
+    optimizer_installation: dict[str, str] = {}
+    if install_missing:
+        from .install_optimizers import ensure_optimizers
+
+        optimizer_installation = ensure_optimizers(
+            selected_methods,
+            tzap_bin=tzap_bin,
+            t_optimizer_root=t_optimizer_root,
+        )
+        tzap_command = optimizer_installation.get("tzap_bin", tzap_command)
+        t_optimizer_root = optimizer_installation.get("t_optimizer_root", t_optimizer_root)
     settings = {
         "error_threshold": error_threshold,
         "t_budget": t_budget,
@@ -543,6 +625,9 @@ def run(
         "experiment": "t_count_methods_comparison",
         "benchmarks": selected_benchmarks,
         "methods": selected_methods,
+        "source_mode": source,
+        "install_missing": install_missing,
+        "optimizer_installation": optimizer_installation,
         "seed": seed,
         "gpu": gpu,
         "settings": settings,
@@ -665,6 +750,17 @@ def _main() -> None:
     parser.add_argument("--evolution-time", type=float, default=1.0)
     parser.add_argument("--tzap-bin", default=None, help="tzap executable or command; defaults to TZAP_BIN/tzap")
     parser.add_argument("--t-optimizer-root", type=Path, default=None, help="cloned T-Optimizer repository")
+    parser.add_argument(
+        "--install-missing",
+        action="store_true",
+        help="with --source generate, install missing PyZX, T-Zap, and T-Optimizer dependencies",
+    )
+    parser.add_argument(
+        "--source",
+        choices=("existing", "generate"),
+        default="existing",
+        help="read stored optimizer results by default; use generate to rerun them",
+    )
     args = parser.parse_args()
     try:
         result = run(
@@ -679,6 +775,8 @@ def _main() -> None:
             evolution_time=args.evolution_time,
             tzap_bin=args.tzap_bin,
             t_optimizer_root=args.t_optimizer_root,
+            source=args.source,
+            install_missing=args.install_missing,
         )
     except (ImportError, KeyError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

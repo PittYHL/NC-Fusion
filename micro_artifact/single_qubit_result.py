@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from ncfusion.metrics import merge_records, read_records_csv, write_json, write_records_csv
+from ncfusion.metrics import read_records_csv, write_json, write_records_csv
 from ncfusion.spec import find_benchmark, find_experiment
 
 from .common import add_cli_arguments, run_configured
@@ -20,6 +20,62 @@ RUSTIQ_PHOENIX_BENCHMARKS = MAIN_BENCHMARKS + ("H2S", "CO2")
 EXTRA_COMPARISON_BENCHMARKS = ("H2S", "CO2", "MgO", "NaCl")
 DEFAULT_BENCHMARKS = MAIN_BENCHMARKS + EXTRA_COMPARISON_BENCHMARKS
 BASELINE_METHODS = ("gridsyn", "rustiq", "phoenix")
+METHOD_ALIASES = {
+    "ncf": "ncf-one",
+    "ncf_one": "ncf-one",
+    "grid": "gridsyn",
+    "gridsynth": "gridsyn",
+}
+SUPPORTED_METHODS = ("ncf-one", *BASELINE_METHODS)
+
+
+def _selected_baselines(methods: list[str] | None) -> tuple[str, ...]:
+    """Resolve method selection to the comparison arms to refresh.
+
+    NC-Fusion is always the candidate circuit in this producer.  Selecting
+    ``ncf-one`` by itself therefore refreshes the default GridSynth comparison;
+    selecting a baseline refreshes only that baseline comparison.  With no
+    selection, preserve the original all-comparisons behavior.
+    """
+
+    if methods is None:
+        return BASELINE_METHODS
+    normalized = tuple(
+        dict.fromkeys(METHOD_ALIASES.get(method.lower(), method.lower()) for method in methods)
+    )
+    unknown = [method for method in normalized if method not in SUPPORTED_METHODS]
+    if unknown:
+        raise ValueError(
+            "single-qubit methods must be selected from ncf-one, gridsyn, rustiq, "
+            f"and phoenix; received {', '.join(unknown)}"
+        )
+    baselines = tuple(method for method in normalized if method in BASELINE_METHODS)
+    if baselines:
+        return baselines
+    return ("gridsyn",)
+
+
+def _merge_partial_records(
+    existing: list[dict[str, object]],
+    updates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Merge benchmark rows while preserving fields from other method runs."""
+
+    merged = [dict(row) for row in existing]
+    positions = {
+        str(row.get("benchmark", "")): index
+        for index, row in enumerate(merged)
+    }
+    for update in updates:
+        benchmark = str(update.get("benchmark", ""))
+        if benchmark in positions:
+            combined = dict(merged[positions[benchmark]])
+            combined.update(update)
+            merged[positions[benchmark]] = combined
+        else:
+            positions[benchmark] = len(merged)
+            merged.append(dict(update))
+    return merged
 
 
 def _reduction_percent(reference: object, candidate: object) -> float | None:
@@ -98,10 +154,21 @@ def _add_average_record(
         f"{prefix}_{metric}_reduction_percent"
         for metric in ("t_count", "t_depth", "clifford")
     )
-    valid_records = [record for record in records if record.get(reduction_fields[0]) is not None]
+    valid_records: list[dict[str, Any]] = []
+    for record in records:
+        try:
+            float(record.get(reduction_fields[0], ""))
+        except (TypeError, ValueError):
+            continue
+        valid_records.append(record)
     averages = {}
     for field in reduction_fields:
-        values = [float(record[field]) for record in valid_records]
+        values: list[float] = []
+        for record in valid_records:
+            try:
+                values.append(float(record.get(field, "")))
+            except (TypeError, ValueError):
+                continue
         averages[field] = sum(values) / len(values) if values else None
     if baseline_method == "gridsyn":
         averages.update(
@@ -137,6 +204,7 @@ def run(
         raise ValueError("source must be existing or generate")
     if error_threshold <= 0:
         raise ValueError("error_threshold must be positive")
+    selected_baselines = _selected_baselines(methods)
     selected = list(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
     if source == "generate":
         configured_experiments = {
@@ -188,7 +256,7 @@ def run(
     processed_records: list[dict[str, Any]] = []
     for record in records:
         _set_exact_ncf_depth(record)
-        for baseline_method in BASELINE_METHODS:
+        for baseline_method in selected_baselines:
             _add_baseline_comparison(record["benchmark"], record, baseline_method)
         processed_records.append(record)
         checkpoint_existing = read_records_csv(output_path / "metrics.csv")
@@ -197,10 +265,9 @@ def run(
             for row in checkpoint_existing
             if not str(row.get("benchmark", "")).startswith("AVERAGE_")
         ]
-        checkpoint_records = merge_records(
+        checkpoint_records = _merge_partial_records(
             checkpoint_benchmarks,
             processed_records,
-            ("benchmark",),
         )
         checkpoint_summaries = [
             _add_average_record(checkpoint_records, method)
@@ -217,7 +284,7 @@ def run(
         for row in existing_records
         if not str(row.get("benchmark", "")).startswith("AVERAGE_")
     ]
-    records = merge_records(existing_benchmark_records, records, ("benchmark",))
+    records = _merge_partial_records(existing_benchmark_records, records)
     summary_records = [_add_average_record(records, method) for method in BASELINE_METHODS]
     records.extend(summary_records)
     average_reductions = {
@@ -237,7 +304,13 @@ def run(
         "source": source,
         "gpu": gpu,
         "benchmarks": selected,
-        "methods": ["ncf-one", *BASELINE_METHODS],
+        "methods": list(
+            dict.fromkeys(
+                METHOD_ALIASES.get(method.lower(), method.lower())
+                for method in (methods or SUPPORTED_METHODS)
+            )
+        ),
+        "comparison_methods": list(selected_baselines),
         "record_count": len(records),
         "benchmark_record_count": len(records) - len(summary_records),
         "summary_record_count": len(summary_records),

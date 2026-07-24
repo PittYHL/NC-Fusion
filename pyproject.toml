@@ -38,6 +38,7 @@ resource = [
   "stimcirq==1.15.0",
   "PyMatching==2.3.1",
 ]
+optimizers = ["pyzx"]
 
 [project.scripts]
 ncfusion = "ncfusion.cli:main"

@@ -14,6 +14,16 @@ from .data import existing_qasm_path
 
 
 BENCHMARKS = tuple(find_experiment("table4").benchmarks) + ("H2S", "CO2")
+BENCHMARK_ALIASES = {
+    "is-2d-30": "Ising-2D-30",
+    "is-2d-60": "Ising-2D-60",
+    "is-3d-30": "Ising-3D-30",
+    "is-3d-60": "Ising-3D-60",
+    "hei-2d-30": "Heisenberg-2D-30",
+    "hei-2d-60": "Heisenberg-2D-60",
+    "hei-3d-30": "Heisenberg-3D-30",
+    "hei-3d-60": "Heisenberg-3D-60",
+}
 METHODS = ("tzap", "t-optimizer", "pyzx", "ncf-one")
 METRICS = ("t_count", "t_depth", "clifford_count")
 METHOD_LABELS = {
@@ -82,6 +92,24 @@ def _cached_number(value: str | None, *, integer: bool) -> int | float | None:
     return int(float(value)) if integer else float(value)
 
 
+def _selected_benchmarks(requested: list[str] | None) -> tuple[str, ...]:
+    if requested is None:
+        return BENCHMARKS
+    canonical = {name.lower(): name for name in BENCHMARKS}
+    selected: list[str] = []
+    for value in requested:
+        key = value.strip().lower()
+        name = BENCHMARK_ALIASES.get(key, canonical.get(key))
+        if name is None:
+            choices = ", ".join(BENCHMARKS)
+            raise ValueError(f"unknown optimizer benchmark {value!r}; choose from: {choices}")
+        if name not in selected:
+            selected.append(name)
+    if not selected:
+        raise ValueError("at least one optimizer benchmark must be selected")
+    return tuple(selected)
+
+
 def _plot(average: dict[str, object], output: Path) -> Path | None:
     try:
         import matplotlib.pyplot as plt
@@ -131,7 +159,7 @@ def run(
 ) -> dict[str, object]:
     from .data import ARTIFACT_ROOT
 
-    selected = tuple(benchmarks or BENCHMARKS)
+    selected = _selected_benchmarks(benchmarks)
     output_path = Path(output)
     cached = _cached_rows(output_path / "relative_metrics.csv")
     rows: list[dict[str, object]] = []
@@ -232,14 +260,22 @@ def run(
 
 def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--benchmark", action="append", dest="benchmarks")
+    parser.add_argument(
+        "--benchmark",
+        action="append",
+        dest="benchmarks",
+        help="benchmark to include; repeat for multiple benchmarks (default: all 13)",
+    )
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("micro_artifact/results/runs/t_count_optimizer_relative"),
     )
     args = parser.parse_args()
-    result = run(args.output, benchmarks=args.benchmarks)
+    try:
+        result = run(args.output, benchmarks=args.benchmarks)
+    except (KeyError, ValueError, FileNotFoundError) as error:
+        raise SystemExit(f"ERROR: {error}") from error
     print(f"Wrote {result['manifest']['relative_metrics_file']}")
     if result["plot"] is not None:
         print(f"Wrote {result['plot']}")

@@ -218,6 +218,7 @@ def run(
     single_threshold: float = 0.005,
     two_molecule_threshold: float = 0.03,
     two_spin_threshold: float = 0.07,
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Run and checkpoint the requested single- and two-qubit sweeps."""
 
@@ -227,9 +228,31 @@ def run(
     unknown = [method for method in chosen_methods if method not in METHODS]
     if unknown:
         raise ValueError(f"Unsupported sensitivity method(s): {', '.join(unknown)}")
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
     selected = _benchmarks(benchmarks)
     output_path = Path(output)
     records: list[dict[str, object]] = list(_read_records(output_path / "metrics.csv"))
+    if source == "existing":
+        if not records:
+            raise FileNotFoundError(
+                "No stored window-sensitivity results were found; rerun with "
+                "--source generate."
+            )
+        manifest = {
+            "artifact_version": "0.1.0",
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "evaluation": "window_size_sensitivity",
+            "benchmarks": selected,
+            "methods": chosen_methods,
+            "source_mode": "existing",
+            "relative_metrics_file": str(output_path / "relative_metrics.csv"),
+            "csv_merge_policy": "read existing checkpointed results",
+        }
+        manifest["record_count"] = len(records)
+        manifest["relative_record_count"] = len(_relative_records(records))
+        _write_checkpoint(output_path, records, manifest)
+        return {"manifest": manifest, "records": records}
     baselines = {benchmark: _grid_baseline(benchmark) for benchmark in selected}
     docker_error = _docker_status() if "ncf-two" in chosen_methods else None
 
@@ -249,6 +272,7 @@ def run(
         },
         "gpu": gpu,
         "seed": seed,
+        "source_mode": source,
         "save_qasm": False,
         "relative_metrics_file": str(output_path / "relative_metrics.csv"),
         "relative_definition": "100 * metric(window) / metric(full) for the same benchmark, method, and threshold",
@@ -355,6 +379,13 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description="Run NC-Fusion window-size sensitivity")
     add_cli_arguments(parser)
     parser.set_defaults(output=DEFAULT_OUTPUT, gpu=1)
+    # Sensitivity inputs are regenerated only when explicitly requested.
+    parser.add_argument(
+        "--source",
+        choices=("existing", "generate"),
+        default="existing",
+        help="read stored sweep results by default; use generate to rerun them",
+    )
     parser.add_argument("--single-threshold", type=float, default=0.005)
     parser.add_argument("--two-molecule-threshold", type=float, default=0.03)
     parser.add_argument("--two-spin-threshold", type=float, default=0.07)
@@ -369,6 +400,7 @@ def _main() -> None:
             single_threshold=args.single_threshold,
             two_molecule_threshold=args.two_molecule_threshold,
             two_spin_threshold=args.two_spin_threshold,
+            source=args.source,
         )
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

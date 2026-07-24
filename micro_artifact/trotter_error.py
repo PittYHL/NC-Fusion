@@ -75,6 +75,7 @@ def run(
     error_threshold: float = 0.001,
     t_budget: int = 60,
     window: int | None = 4,
+    source: str = "existing",
 ) -> dict[str, Any]:
     """Measure ``||exp(-iHt) - U_circuit||_2`` for GridSynth and NC-Fusion.
 
@@ -96,6 +97,8 @@ def run(
         )
     if error_threshold <= 0 or t_budget < 1:
         raise ValueError("error_threshold must be positive and t_budget must be positive")
+    if source not in {"existing", "generate"}:
+        raise ValueError("source must be existing or generate")
 
     selected_methods = validate_methods(methods)
     selected_benchmarks = benchmarks or list(find_experiment("error-evaluation").benchmarks)
@@ -105,6 +108,16 @@ def run(
     output_path.mkdir(parents=True, exist_ok=True)
     records = _read_records(output_path / "metrics.csv")
     uploaded_exact_cache = output_path / "U_exact.npy"
+    if source == "existing" and records:
+        return {
+            "manifest": {
+                "evaluation": "trotter_error",
+                "source_mode": "existing",
+                "record_count": len(records),
+                "status": "read_existing",
+            },
+            "records": records,
+        }
 
     def write_checkpoint(status: str) -> None:
         manifest = {
@@ -117,6 +130,7 @@ def run(
             "benchmarks": selected_benchmarks,
             "methods": selected_methods,
             "trotter_steps": steps,
+            "source_mode": source,
             "error_function": "legacy.error_evaluation.trotter_operator_norm_error",
             "circuit_argument": "stored c+t for step 1; generated rz for other steps",
             "generated_circuit_root": str(output_path / "circuits"),
@@ -139,13 +153,14 @@ def run(
         for method in selected_methods:
             for step_count in steps:
                 start = time.perf_counter()
-                existing = (
-                    load_existing_method_circuits(spec.name, method)
-                    if step_count == 1
-                    else load_generated_method_circuits(
+                if source == "generate":
+                    existing = None
+                elif step_count == 1:
+                    existing = load_existing_method_circuits(spec.name, method)
+                else:
+                    existing = load_generated_method_circuits(
                         output_path, spec.name, method, step_count
                     )
-                )
                 if existing is not None:
                     rz_qc, clifford_t_qc, compilation_time = existing
                     evaluation_qc = clifford_t_qc if step_count == 1 else rz_qc
@@ -162,6 +177,11 @@ def run(
                         else (None, None)
                     )
                 else:
+                    if source == "existing":
+                        raise FileNotFoundError(
+                            f"No stored circuit for {spec.name}, {method}, Trotter step "
+                            f"{step_count}; rerun with --source generate."
+                        )
                     compile_started = time.perf_counter()
                     rz_qc, clifford_t_qc = compile_method(
                         hamiltonian,
@@ -232,6 +252,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--error-threshold", type=float, default=0.001)
     parser.add_argument("--t-budget", type=int, default=60)
     parser.add_argument("--window", type=int, default=4)
+    parser.add_argument(
+        "--source",
+        choices=("existing", "generate"),
+        default="existing",
+        help="read stored circuits by default; use generate to regenerate them",
+    )
     args = parser.parse_args(argv)
     try:
         result = run(
@@ -245,6 +271,7 @@ def main(argv: list[str] | None = None) -> None:
             error_threshold=args.error_threshold,
             t_budget=args.t_budget,
             window=args.window,
+            source=args.source,
         )
     except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

@@ -624,7 +624,6 @@ def main(argv: list[str] | None = None) -> None:
     add_cli_arguments(parser)
     parser.add_argument("--budget", type=int, choices=(1, 2))
     parser.add_argument("--window", type=int)
-    parser.add_argument("--epsilon", action="append", dest="epsilons", type=float)
     parser.add_argument("--error-threshold", type=float, default=0.001)
     parser.add_argument("--t-budget", type=int, default=60)
     parser.add_argument("--trotter-steps", type=int, default=1)
@@ -641,7 +640,6 @@ def main(argv: list[str] | None = None) -> None:
             gpu=args.gpu,
             budget=args.budget,
             window=args.window,
-            epsilons=args.epsilons or DEFAULT_EPSILONS,
             error_threshold=args.error_threshold,
             t_budget=args.t_budget,
             trotter_steps=args.trotter_steps,
