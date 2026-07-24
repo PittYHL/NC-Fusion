@@ -364,7 +364,7 @@ def baseline_circuit(hamiltonian, budget, error_threshold, gpu = 0, Trotter_step
     clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name != 't')
     print("T Count:", t_count)
     print("Clifford Count:", clifford_count)
-    t_depth = new_qc.depth(lambda gate: gate[0].name == 't')
+    t_depth = new_qc.depth(lambda gate: gate[0].name == 't' or gate[0].name == 'tdg')
     print("T Depth:", t_depth)
 
     if use_trotter == False:
@@ -379,7 +379,7 @@ def baseline_circuit(hamiltonian, budget, error_threshold, gpu = 0, Trotter_step
     # clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name != 't')
     # print("T Count:", t_count)
     # print("Clifford Count:", clifford_count)
-    # t_depth = new_qc.depth(lambda gate: gate[0].name == 't')
+    # t_depth = new_qc.depth(lambda gate: gate[0].name == 't' or gate[0].name == 'tdg')
     # print("T Depth:", t_depth)
 
     return Trotter_qc, synthesized_qc
@@ -464,7 +464,7 @@ def phoenix_baseline_circuit(hamiltonian, pauli_strings, coeffs, error_threshold
     clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name != 't')
     print("T Count:", t_count)
     print("Clifford Count:", clifford_count)
-    t_depth = new_qc.depth(lambda gate: gate[0].name == 't')
+    t_depth = new_qc.depth(lambda gate: gate[0].name == 't' or gate[0].name == 'tdg')
     print("T Depth:", t_depth)
     for _ in range(Trotter_steps):
         Trotter_qc.compose(qc, inplace=True)

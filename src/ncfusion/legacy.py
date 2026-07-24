@@ -118,7 +118,9 @@ def _metrics(circuit) -> dict[str, int]:
     t_count = sum(item.operation.name in t_names for item in operations)
     clifford_count = len(operations) - t_count
     # Qiskit's filtered depth is the convention used by the original scripts.
-    t_depth = int(circuit.depth(lambda item: item[0].name in t_names))
+    t_depth = int(
+        circuit.depth(lambda item: item[0].name == "t" or item[0].name == "tdg")
+    )
     return {
         "t_count": int(t_count),
         "t_depth": t_depth,
@@ -141,13 +143,21 @@ def _grouped_ncf_inputs(hamiltonian, budget: int, window: int, order_seed: int |
     pauli_strings = [pauli_strings[index] for index in non_identity]
     coeffs = coeffs[non_identity]
     if order_seed is not None:
-        order = np.random.default_rng(order_seed).permutation(len(pauli_strings))
+        # ``2025summer/random_order.py`` uses the legacy NumPy global RNG and
+        # ``np.random.permutation``.  Keep that behavior for the artifact
+        # random-order evaluation so a recorded seed describes the same
+        # Pauli-order construction as the source script.
+        np.random.seed(order_seed)
+        order = np.random.permutation(len(pauli_strings))
         pauli_strings = [pauli_strings[index] for index in order]
         coeffs = coeffs[order]
     pauli_list = {label: coeffs[index].real for index, label in enumerate(pauli_strings)}
-    group, no_commute_group = grouping(pauli_strings, budget, window, use_window=True)
+    # The primary NC-Fusion path in main_alg.py passes only ``group`` to the
+    # compressor. ``no_commute_group`` is reserved for the component-ablation
+    # variants; including it here doubles the reported unitary count.
+    group, _no_commute_group = grouping(pauli_strings, budget, window, use_window=True)
     new_paulis, commute_paulis, circuits = [], [], []
-    for subgroup in group + no_commute_group:
+    for subgroup in group:
         permuted = permute_keys_after_weight_sort(copy.deepcopy(subgroup))
         transformed, circuit, signs = greedy_circuit_generation(permuted[0])
         new, commute = new_paulis_transform(pauli_list, transformed, permuted[0], signs)
@@ -158,7 +168,7 @@ def _grouped_ncf_inputs(hamiltonian, budget: int, window: int, order_seed: int |
 
 
 def _single_qubit_ncf(hamiltonian, spec, settings, gpu: int, *, save_qasm: bool):
-    from compressor import compressor_circuit
+    from compressor import compressor_circuit, ncf_unitaries_generated
 
     (new_paulis, commute_paulis, circuits), pauli_count = _grouped_ncf_inputs(
         hamiltonian,
@@ -182,7 +192,7 @@ def _single_qubit_ncf(hamiltonian, spec, settings, gpu: int, *, save_qasm: bool)
         fix_error_threshold=0,
         t_budget=int(settings.get("t_budget", 60)),
     )
-    return rz_qc, synthesized
+    return rz_qc, synthesized, ncf_unitaries_generated(new_paulis, commute_paulis)
 
 
 def _two_qubit_ncf(hamiltonian, spec, settings, *, save_qasm: bool):
@@ -191,18 +201,17 @@ def _two_qubit_ncf(hamiltonian, spec, settings, *, save_qasm: bool):
     (new_paulis, commute_paulis, circuits), pauli_count = _grouped_ncf_inputs(
         hamiltonian, 2, int(settings.get("two_window", 128)), settings.get("pauli_order_seed")
     )
-    unitary_count = sum(1 for item in new_paulis if item) + sum(
-        len(item) for item in commute_paulis
-    )
+    unitary_count = sum(1 for item in new_paulis if item)
+    rz_count = sum(len(item) for item in commute_paulis)
     circuit = synthetiq_compressor(
         new_paulis,
         commute_paulis,
         circuits,
-        float(settings.get("two_qubit_error", 0.12)),
+        float(settings.get("two_qubit_error", settings.get("synthesis_error", 0.12))),
         2,
         hamiltonian.num_qubits,
         num_paulis=pauli_count,
-        normalized=1,
+        normalized=int(settings.get("ncf_two_normalized", 1)),
     )
     if circuit is None:
         raise RuntimeError("Synthetiq did not return a circuit")
@@ -213,7 +222,7 @@ def _two_qubit_ncf(hamiltonian, spec, settings, *, save_qasm: bool):
         circuit_path(spec.name, "ncf-two_c+t").write_text(
             qasm2.dumps(circuit), encoding="utf-8"
         )
-    return circuit, unitary_count
+    return circuit, unitary_count, rz_count
 
 
 def _count_gates(circuit, names: set[str]) -> int:
@@ -224,20 +233,11 @@ def _count_gates(circuit, names: set[str]) -> int:
     )
 
 
-def _count_non_clifford_rotations(circuit) -> int:
-    import math
+def _original_rz_gate_count(hamiltonian) -> int:
+    """Match ``main_alg.py:159``: count non-identity Pauli terms."""
 
-    count = 0
-    for item in circuit.data:
-        operation = item.operation if hasattr(item, "operation") else item[0]
-        name = operation.name.lower()
-        if name in {"u", "u3"}:
-            count += 1
-        elif name == "rz":
-            ratio = float(operation.params[0]) / (math.pi / 2)
-            if not math.isclose(ratio, round(ratio), abs_tol=1e-8):
-                count += 1
-    return count
+    identity = "I" * hamiltonian.num_qubits
+    return sum(label != identity for label in hamiltonian.paulis.to_labels())
 
 
 def run_benchmark(
@@ -266,6 +266,8 @@ def run_benchmark(
     }
     original_rz_qc = None
     ncf_rz_qc = None
+    ncf_unitary_count = None
+    ncf_rz_count = None
     if method == "gridsyn":
         rz_qc, circuit = baseline_circuit(
             hamiltonian, 1, GRIDSYNTH=True, rustiq=False,
@@ -283,7 +285,7 @@ def run_benchmark(
             hamiltonian, 1, GRIDSYNTH=True, rustiq=False,
             benchmark=None, method="grid", **{**common, "synthesize": False}
         )
-        ncf_rz_qc, circuit = _single_qubit_ncf(
+        ncf_rz_qc, circuit, ncf_unitary_count = _single_qubit_ncf(
             hamiltonian, spec, effective_settings, gpu, save_qasm=save_qasm
         )
         if save_qasm and original_rz_qc is not None:
@@ -297,7 +299,7 @@ def run_benchmark(
             hamiltonian, 1, GRIDSYNTH=True, rustiq=False,
             benchmark=None, method="grid", **{**common, "synthesize": False}
         )
-        circuit, ncf_unitary_count = _two_qubit_ncf(
+        circuit, ncf_unitary_count, ncf_rz_count = _two_qubit_ncf(
             hamiltonian, spec, effective_settings, save_qasm=save_qasm
         )
         if save_qasm and original_rz_qc is not None:
@@ -323,11 +325,11 @@ def run_benchmark(
     metrics["compilation_time_seconds"] = runtime
     metrics["data_source"] = "generated"
     if original_rz_qc is not None:
-        metrics["original_rz_gate_count"] = _count_gates(original_rz_qc, {"rz"})
-    if ncf_rz_qc is not None:
-        metrics["ncf_unitaries_generated"] = _count_non_clifford_rotations(ncf_rz_qc)
-    if method == "ncf-two":
+        metrics["original_rz_gate_count"] = _original_rz_gate_count(hamiltonian)
+    if ncf_unitary_count is not None:
         metrics["ncf_unitaries_generated"] = ncf_unitary_count
+    if method == "ncf-two" and ncf_rz_count is not None:
+        metrics["ncf_rz_generated"] = ncf_rz_count
     if save_qasm:
         suffixes = {"gridsyn": "grid_c+t", "rustiq": "rustiq_c+t", "ncf-one": "ncf_c+t", "ncf-two": "ncf-two_c+t"}
         if method in suffixes:

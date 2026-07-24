@@ -24,8 +24,6 @@ def circuit_metrics(circuit: Any) -> dict[str, int]:
     t_names = {"t", "tdg"}
     t_count = 0
     rz_count = 0
-    layers: dict[int, int] = {}
-    t_depth = 0
     for item in operations:
         operation, qargs, _ = operation_parts(item)
         name = operation.name.lower()
@@ -34,11 +32,12 @@ def circuit_metrics(circuit: Any) -> dict[str, int]:
         if name not in t_names:
             continue
         t_count += 1
-        qubits = [circuit.find_bit(qubit).index for qubit in qargs]
-        layer = 1 + max((layers.get(qubit, 0) for qubit in qubits), default=0)
-        for qubit in qubits:
-            layers[qubit] = layer
-        t_depth = max(t_depth, layer)
+
+    # Match ncf/NCF/tzap_test.py: both T and inverse-T operations contribute
+    # to the T-depth filter.
+    t_depth = int(
+        circuit.depth(lambda item: item[0].name == "t" or item[0].name == "tdg")
+    )
 
     return {
         "t_count": int(t_count),

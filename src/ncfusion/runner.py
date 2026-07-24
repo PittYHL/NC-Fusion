@@ -19,7 +19,14 @@ import sys
 import csv
 from typing import Any
 
-from .metrics import CircuitMetrics, metrics_from_qasm, write_json, write_records_csv
+from .metrics import (
+    CircuitMetrics,
+    merge_records,
+    metrics_from_qasm,
+    read_records_csv,
+    write_json,
+    write_records_csv,
+)
 from .pauli import anticommuting_pairs, commutes, group_by_support
 from .spec import ExperimentSpec, BenchmarkSpec, find_experiment, select_benchmarks
 
@@ -115,6 +122,7 @@ def run_paper(
 ) -> dict[str, Any]:
     experiment = find_experiment(experiment_name)
     selected = select_benchmarks(experiment, requested_benchmarks)
+    output.mkdir(parents=True, exist_ok=True)
     chosen_methods = tuple(methods or experiment.methods)
     from micro_artifact.data import reusable_record
 
@@ -214,11 +222,30 @@ def run_paper(
                         record[key] = run_settings[key]
                 records.append(record)
 
+            # Checkpoint after each benchmark.  The final write below still
+            # rebuilds the manifest, but an interrupted run retains every
+            # completed configuration instead of waiting for the full sweep.
+            checkpoint_records = merge_records(
+                read_records_csv(output / "metrics.csv"),
+                records,
+                ("benchmark", "method", "window", "trotter_step", "repetition"),
+            )
+            write_records_csv(output / "metrics.csv", checkpoint_records)
+
+    records = merge_records(
+        read_records_csv(output / "metrics.csv"),
+        records,
+        ("benchmark", "method", "window", "trotter_step", "repetition"),
+    )
     manifest = _manifest(experiment, selected, seed)
     manifest["methods"] = chosen_methods
     manifest["record_count"] = len(records)
     manifest["reuse_existing"] = reuse_existing
     manifest["save_qasm"] = save_qasm and experiment.name != "sensitivity"
+    manifest["csv_merge_policy"] = (
+        "replace matching benchmark/method/window/trotter_step/repetition rows "
+        "and append new configurations"
+    )
     if synthesis_error is not None:
         manifest["synthesis_error_override"] = float(synthesis_error)
     write_json(output / "manifest.json", manifest)

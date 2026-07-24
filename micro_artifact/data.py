@@ -62,7 +62,13 @@ def qasm_path(benchmark: str, method: str, *, synthesized: bool = True) -> Path:
     return PRIMARY_CIRCUIT_ROOT / directory / f"{directory}_{stem}_{suffix}.qasm"
 
 
-def existing_qasm_path(benchmark: str, method: str, *, synthesized: bool = True) -> Path | None:
+def existing_qasm_path(
+    benchmark: str,
+    method: str,
+    *,
+    synthesized: bool = True,
+    prefer_two_qubit: bool = False,
+) -> Path | None:
     """Find an existing QASM file, including the legacy two-qubit spelling."""
 
     directory = benchmark_directory(benchmark)
@@ -80,6 +86,31 @@ def existing_qasm_path(benchmark: str, method: str, *, synthesized: bool = True)
                 CIRCUIT_ROOT / "two-qubit" / directory / filename,
             )
         )
+    # The uploaded two-qubit producer files use the historical ``*_two_*``
+    # names. In particular, the Synthetiq output is spelled ``ncf_sythetiq``
+    # in that dataset.
+    two_qubit_stems = {
+        "gridsyn": ("two_grid",),
+        "rustiq": ("two_rustiq",),
+        "ncf-one": ("two_ncf",),
+        "ncf-two": ("two_ncf_sythetiq", "two_ncf_synthetiq"),
+    }
+    two_qubit_candidates = []
+    for two_stem in two_qubit_stems.get(method, ()):
+        if synthesized:
+            two_suffixes = ("c+t",)
+        elif method in {"rustiq", "phoenix"}:
+            two_suffixes = ("RZ", "rz")
+        else:
+            two_suffixes = ("rz",)
+        two_qubit_candidates.extend(
+            CIRCUIT_ROOT / "two-qubit" / directory / f"{directory}_{two_stem}_{suffix}.qasm"
+            for suffix in two_suffixes
+        )
+    if prefer_two_qubit:
+        candidates = two_qubit_candidates + candidates
+    else:
+        candidates.extend(two_qubit_candidates)
     if method == "ncf-two" and synthesized:
         candidates.extend(
             path.with_name(path.name.replace("ncf-two", "ncf_two"))
@@ -155,36 +186,17 @@ def qasm_gate_count(path: Path, gate: str) -> int:
     return sum(1 for name, _, _ in _qasm_gate_lines(path) if name == gate.lower())
 
 
-def _streaming_t_depth(path: Path) -> int:
-    """Mirror Qiskit's filtered depth without materializing huge QASM files."""
-
-    object_depths: dict[int, int] = {}
-    depth = 0
-    for name, _, qubits in _qasm_gate_lines(path):
-        new_depth = max((object_depths.get(qubit, 0) for qubit in qubits), default=0)
-        if name == "t":
-            new_depth += 1
-        for qubit in qubits:
-            object_depths[qubit] = new_depth
-        depth = max(depth, new_depth)
-    return depth
-
-
 def exact_t_depth(path: Path) -> int:
-    """Compute T depth with the Qiskit filter used by the paper scripts."""
-
-    # QASM above this size can contain hundreds of thousands of gates; the
-    # equivalent streaming calculation avoids materializing a large Qiskit
-    # circuit while preserving the filtered-depth synchronization rules.
-    if path.stat().st_size > 1_000_000:
-        return _streaming_t_depth(path)
+    """Compute T-depth with the single canonical Qiskit filter."""
 
     from qiskit import QuantumCircuit
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         circuit = QuantumCircuit.from_qasm_file(str(path))
-        return int(circuit.depth(lambda gate: gate[0].name == "t"))
+        return int(
+            circuit.depth(lambda gate: gate[0].name == "t" or gate[0].name == "tdg")
+        )
 
 
 def producer_metadata(benchmark: str, method: str) -> dict[str, Any]:
@@ -195,6 +207,7 @@ def producer_metadata(benchmark: str, method: str) -> dict[str, Any]:
         "compilation_time_seconds": row.get("compilation_time_seconds") or row.get("runtime_seconds"),
         "runtime_seconds": row.get("runtime_seconds") or row.get("compilation_time_seconds"),
         "ncf_unitaries_generated": row.get("ncf_unitaries_generated"),
+        "ncf_rz_generated": row.get("ncf_rz_generated"),
         "original_rz_gate_count": row.get("original_rz_gate_count"),
     }
     if method == "ncf-one":
@@ -202,7 +215,11 @@ def producer_metadata(benchmark: str, method: str) -> dict[str, Any]:
         ncf_path = existing_qasm_path(benchmark, "ncf-one", synthesized=False)
         if original_path is not None:
             if metadata["original_rz_gate_count"] is None:
-                metadata["original_rz_gate_count"] = qasm_gate_count(original_path, "rz")
+                # Match 2025_summer_original/main_alg.py:159. This is the
+                # non-identity Pauli count, not the transpiled QASM RZ count.
+                from ncfusion.spec import find_benchmark
+
+                metadata["original_rz_gate_count"] = find_benchmark(benchmark).pauli_terms
             metadata["rz_qasm_path"] = str(original_path.relative_to(ARTIFACT_ROOT.parent))
         if ncf_path is not None:
             if metadata["ncf_unitaries_generated"] is None:

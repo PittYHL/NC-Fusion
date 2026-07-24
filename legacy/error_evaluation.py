@@ -308,16 +308,47 @@ def trotter_operator_norm_error(H, qc, t, cache_file="U_exact.npy"):
         U_exact = expm(-1j * H_mat * t)
         np.save(cache_file, U_exact)
 
-    # Circuit unitary
-    U_circ = Operator(qc).data
+    # Circuit unitary.  Aer avoids the very slow Python-side gate-by-gate
+    # construction of a dense Operator for large Clifford+T circuits.  Keep
+    # the original implementation as a fallback for environments without
+    # qiskit-aer.
+    try:
+        from qiskit_aer import AerSimulator
+
+        unitary_qc = qc.copy()
+        unitary_qc.save_unitary()
+        result = AerSimulator(method="unitary").run(unitary_qc).result()
+        U_circ = np.asarray(result.get_unitary(unitary_qc))
+    except ImportError:
+        U_circ = Operator(qc).data
 
     # Remove global phase
     phase = np.angle(np.trace(U_exact.conj().T @ U_circ))
     U_circ = U_circ * np.exp(-1j * phase)
 
-    # Operator norm
-    error = np.linalg.norm(U_exact - U_circ, ord=2)
+    # Operator norm.  For the large LiH operators, ARPACK computes the
+    # largest singular value directly without the prohibitively expensive
+    # full dense SVD.  This is still the spectral norm of the same dense
+    # difference matrix; use the exact dense fallback for smaller operators
+    # or when SciPy's iterative solver is unavailable.
+    difference = U_exact - U_circ
+    if max(difference.shape) >= 2048:
+        try:
+            from scipy.sparse.linalg import svds
+
+            singular_values = svds(
+                difference,
+                k=1,
+                which="LM",
+                return_singular_vectors=False,
+                tol=1e-10,
+                maxiter=2000,
+            )
+            error = float(np.max(singular_values))
+        except (ImportError, RuntimeError, ValueError):
+            error = np.linalg.norm(difference, ord=2)
+    else:
+        error = np.linalg.norm(difference, ord=2)
     print('trotter operator norm error: ', error)
 
     return error
-

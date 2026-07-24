@@ -213,6 +213,14 @@ def rewrite_clifford_rz_u3_gates(circ):
             new_circ.append(inst, qargs, cargs)
     return new_circ
 
+def ncf_unitaries_generated(new_paulis, commute_paulis):
+    """Return the original compressor's combined rotation count."""
+
+    count = sum(1 for pauli_string in new_paulis if pauli_string != {})
+    count += sum(len(pauli_string) for pauli_string in commute_paulis)
+    return count
+
+
 def compressor_circuit(new_paulis, commute_paulis, circuits, error_threshold, budget, num_qubits, gpu = 0, num_paulis = 0, fix_error_threshold = 0, rz = 0, gridsyn = False, trotter_steps = 1, evolution_time = 1, synthesize = True, benchmark = None, t_budget = 60):
     if gridsyn:
         rz = 1
@@ -297,12 +305,7 @@ def compressor_circuit(new_paulis, commute_paulis, circuits, error_threshold, bu
             num_paulis += len(pauli_string)
         for pauli_string in commute_paulis:
             num_paulis += len(pauli_string)
-    num_rotations = 0
-    for pauli_string in new_paulis:
-        if pauli_string != {}:
-            num_rotations = num_rotations + 1
-    for pauli_string in commute_paulis:
-        num_rotations += len(pauli_string)
+    num_rotations = ncf_unitaries_generated(new_paulis, commute_paulis)
     if fix_error_threshold == 0:
         normal_error = error_threshold * num_paulis / num_rotations
     else:
@@ -376,7 +379,7 @@ def compressor_circuit(new_paulis, commute_paulis, circuits, error_threshold, bu
     clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name != 't')
     print("T Count:", t_count)
     print("Clifford Count:", clifford_count)
-    t_depth = new_qc.depth(lambda gate: gate[0].name == 't')
+    t_depth = new_qc.depth(lambda gate: gate[0].name == 't' or gate[0].name == 'tdg')
     print("T Depth:", t_depth)
     # print(original_qc.global_phase)
     # print(qc.global_phase)
@@ -526,7 +529,7 @@ def synthetiq_compressor(new_paulis, commute_paulis, circuits, error_threshold, 
 
     t_count = sum(1 for instr, _, _ in new_qc.data if instr.name in {'t', 'tdg'})
     clifford_count = sum(1 for instr, _, _ in new_qc.data if instr.name not in {'t', 'tdg'})
-    t_depth = new_qc.depth(lambda gate: gate[0].name in {'t', 'tdg'})
+    t_depth = new_qc.depth(lambda gate: gate[0].name == 't' or gate[0].name == 'tdg')
     print("T Count:", t_count)
     print("Clifford Count:", clifford_count)
     print("T Depth:", t_depth)

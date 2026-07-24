@@ -5,7 +5,7 @@ following modules are intentionally explicit about their status:
 
 | Module | Status | What is missing |
 | --- | --- | --- |
-| `space_volume_analysis.py` | Available | Loads the stored `grid`, `rustiq`, and `ncf` Clifford+T QASM files and runs Infleqtion `resource-superstaq` with one and ten T factories. |
+| `space_volume_analysis.py` | Available | Loads the stored `grid` and `ncf` Clifford+T QASM files for 13 benchmarks, runs Infleqtion `resource-superstaq` with one and ten T factories, and writes NC-Fusion/GridSynth relative volume. |
 
 The configuration also names `MgO` and `NaCl` for this section, but their
 Clifford+T QASM inputs are not present in the current checkout. A full run
@@ -21,7 +21,7 @@ producer data where applicable:
   scheduling variants from `main_alg.py`)
 * `precision_abalation.py` (paper Section 5.6.2, `fix_error_threshold=0`
   versus `1`)
-* `trotter_error.py` (paper Section 5.7.1, using `rz_qc`)
+* `trotter_error.py` (paper Section 5.7.1, using stored `c+t` at step 1 and generated `rz` circuits otherwise)
 * `application_level_fidelity.py` (paper Section 5.7.2, using
   `clifford_t_qc`)
 * `single_qubit_result.py`

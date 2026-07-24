@@ -2,10 +2,84 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 
 SUPPORTED_METHODS = ("gridsyn", "ncf-one")
+
+
+def generated_method_circuit_paths(
+    output: Path | str,
+    benchmark: str,
+    method: str,
+    trotter_steps: int,
+) -> tuple[Path, Path]:
+    """Return step-specific RZ and Clifford+T paths for generated circuits."""
+
+    directory = Path(output) / "circuits" / benchmark
+    stem = f"{benchmark}_{method}_trotter_steps_{int(trotter_steps)}"
+    return directory / f"{stem}_rz.qasm", directory / f"{stem}_c+t.qasm"
+
+
+def save_generated_method_circuits(
+    output: Path | str,
+    benchmark: str,
+    method: str,
+    trotter_steps: int,
+    rz_qc: Any,
+    clifford_t_qc: Any,
+) -> tuple[Path, Path]:
+    """Save both generated circuit forms with the Trotter step in the name."""
+
+    from qiskit import qasm2
+
+    rz_path, clifford_t_path = generated_method_circuit_paths(
+        output, benchmark, method, trotter_steps
+    )
+    rz_path.parent.mkdir(parents=True, exist_ok=True)
+    rz_path.write_text(qasm2.dumps(rz_qc), encoding="utf-8")
+    clifford_t_path.write_text(qasm2.dumps(clifford_t_qc), encoding="utf-8")
+    return rz_path, clifford_t_path
+
+
+def load_generated_method_circuits(
+    output: Path | str,
+    benchmark: str,
+    method: str,
+    trotter_steps: int,
+) -> tuple[Any, Any, float | None] | None:
+    """Load a previously generated pair for one exact Trotter step count."""
+
+    rz_path, clifford_t_path = generated_method_circuit_paths(
+        output, benchmark, method, trotter_steps
+    )
+    if not rz_path.is_file() or not clifford_t_path.is_file():
+        return None
+
+    from qiskit import QuantumCircuit
+
+    compilation_time: float | None = None
+    metrics_path = Path(output) / "metrics.csv"
+    if metrics_path.is_file():
+        import csv
+
+        with metrics_path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                if (
+                    row.get("benchmark") == benchmark
+                    and row.get("method") == method
+                    and row.get("trotter_steps") == str(int(trotter_steps))
+                ):
+                    value = row.get("compilation_time_seconds")
+                    if value not in (None, ""):
+                        compilation_time = float(value)
+                    break
+    return (
+        QuantumCircuit.from_qasm_file(str(rz_path)),
+        QuantumCircuit.from_qasm_file(str(clifford_t_path)),
+        compilation_time,
+    )
 
 
 def load_existing_method_circuits(benchmark: str, method: str) -> tuple[Any, Any, float | None] | None:
@@ -21,6 +95,8 @@ def load_existing_method_circuits(benchmark: str, method: str) -> tuple[Any, Any
 
     metadata = producer_metadata(benchmark, method)
     compilation_time = metadata.get("compilation_time_seconds")
+    if compilation_time in (None, ""):
+        compilation_time = None
     return (
         QuantumCircuit.from_qasm_file(str(rz_path)),
         QuantumCircuit.from_qasm_file(str(clifford_t_path)),

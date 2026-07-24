@@ -154,6 +154,15 @@ def optimize_with_toptimizer(
         sys.path.insert(0, path_text)
 
     try:
+        # The bundled QuaEC dependency used by T-Optimizer predates the
+        # collections.abc move. Keep the compatibility fix local to this
+        # optional adapter instead of modifying the external repository.
+        import collections
+        import collections.abc
+
+        for name in ("Sequence", "Mapping", "MutableMapping", "Iterable", "Set", "MutableSet"):
+            if not hasattr(collections, name) and hasattr(collections.abc, name):
+                setattr(collections, name, getattr(collections.abc, name))
         optimizer = importlib.import_module("optimize.T_optimizer")
     except Exception as error:  # pragma: no cover - depends on external repo
         raise RuntimeError(

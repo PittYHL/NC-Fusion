@@ -27,17 +27,18 @@ import sys
 import time
 from typing import Any
 
-from ncfusion.metrics import write_json, write_records_csv
+from ncfusion.metrics import merge_records, read_records_csv, write_json, write_records_csv
 from ncfusion.runner import dependency_status
 from ncfusion.spec import find_benchmark, find_experiment
 
 from .from_qiskit import optimize_with_toptimizer
 from .optimizer_common import circuit_metrics, run_tzap, synthesize_rz, write_qasm
-from .pyzx import optimize as optimize_pyzx
+from .pyzx import convert_pyzx_rz_to_clifford_t, optimize as optimize_pyzx
 
 
 STATUS = "available"
 DEFAULT_METHODS = ("gridsyn", "tzap", "pyzx", "t-optimizer")
+DEFAULT_BENCHMARKS = tuple(find_experiment("table4").benchmarks) + ("H2S", "CO2")
 
 
 def _canonical_methods(methods: list[str] | None) -> tuple[str, ...]:
@@ -93,18 +94,27 @@ def _record(
     return row
 
 
-def _build_reference_circuits(spec: Any, settings: dict[str, object], gpu: int) -> tuple[Any, Any]:
+def _build_reference_circuits(
+    spec: Any,
+    settings: dict[str, object],
+    gpu: int,
+    *,
+    need_gridsyn: bool,
+) -> tuple[Any, Any | None]:
     from .data import existing_qasm_path
 
     existing_rz = existing_qasm_path(spec.name, "gridsyn", synthesized=False)
     existing_grid = existing_qasm_path(spec.name, "gridsyn", synthesized=True)
-    if existing_rz is not None and existing_grid is not None:
+    if existing_rz is not None and (not need_gridsyn or existing_grid is not None):
         from qiskit import QuantumCircuit
 
-        return (
-            QuantumCircuit.from_qasm_file(str(existing_rz)),
-            QuantumCircuit.from_qasm_file(str(existing_grid)),
+        rz_qc = QuantumCircuit.from_qasm_file(str(existing_rz))
+        gridsyn_qc = (
+            QuantumCircuit.from_qasm_file(str(existing_grid))
+            if need_gridsyn and existing_grid is not None
+            else None
         )
+        return rz_qc, gridsyn_qc
 
     from ncfusion.legacy import build_hamiltonian
     from baseline import baseline_circuit
@@ -125,6 +135,52 @@ def _build_reference_circuits(spec: Any, settings: dict[str, object], gpu: int) 
         method="grid",
     )
     return rz_qc, gridsyn_qc
+
+
+def _merge_reduction_file(
+    path: Path,
+    updates: list[dict[str, object]],
+    method: str,
+) -> list[dict[str, object]]:
+    """Merge per-benchmark reductions and rebuild one aggregate row."""
+
+    existing = [
+        row
+        for row in read_records_csv(path)
+        if not str(row.get("benchmark", "")).startswith("AVERAGE_")
+    ]
+    merged = merge_records(existing, updates, ("benchmark", "method"))
+    if not merged:
+        return []
+
+    optimized_prefix = {
+        "tzap": "tzap",
+        "pyzx": "pyzx",
+        "t-optimizer": "t_optimizer",
+    }[method]
+    average: dict[str, object] = {
+        "benchmark": f"AVERAGE_{len(merged)}",
+        "method": method,
+        "baseline": "gridsyn",
+        "baseline_qasm_path": "",
+        "optimized_qasm_path": "",
+    }
+    for metric in ("t_count", "t_depth", "clifford_count"):
+        fields = (
+            f"gridsyn_{metric}",
+            f"{optimized_prefix}_{metric}",
+            f"{metric}_reduction_percent",
+        )
+        for field in fields:
+            values = [
+                float(row[field])
+                for row in merged
+                if row.get(field) not in (None, "")
+            ]
+            average[field] = sum(values) / len(values) if values else None
+    merged.append(average)
+    write_records_csv(path, merged)
+    return merged
 
 
 def run(
@@ -148,8 +204,7 @@ def run(
     if t_budget < 1 or trotter_steps < 1:
         raise ValueError("t_budget and trotter_steps must be positive")
 
-    experiment = find_experiment("optimizer-comparison")
-    selected_benchmarks = benchmarks or list(experiment.benchmarks)
+    selected_benchmarks = benchmarks or list(DEFAULT_BENCHMARKS)
     selected_methods = _canonical_methods(methods)
     output_path = Path(output)
     circuit_dir = output_path / "circuits"
@@ -171,16 +226,40 @@ def run(
         pass
 
     records: list[dict[str, object]] = []
+    tzap_reductions: list[dict[str, object]] = []
+    t_optimizer_reductions: list[dict[str, object]] = []
+    pyzx_reductions: list[dict[str, object]] = []
+    pyzx_failures: list[dict[str, str]] = []
+    need_gridsyn = any(method in selected_methods for method in ("gridsyn", "pyzx", "t-optimizer"))
+
+    def checkpoint() -> None:
+        merged = merge_records(
+            read_records_csv(output_path / "metrics.csv"),
+            records,
+            ("benchmark", "method", "stage"),
+        )
+        write_records_csv(output_path / "metrics.csv", merged)
+        for path, updates, method in (
+            (output_path / "tzap_reductions.csv", tzap_reductions, "tzap"),
+            (
+                output_path / "t_optimizer_reductions.csv",
+                t_optimizer_reductions,
+                "t-optimizer",
+            ),
+            (output_path / "pyzx_reductions.csv", pyzx_reductions, "pyzx"),
+        ):
+            if updates:
+                _merge_reduction_file(path, updates, method)
+
     for benchmark_name in selected_benchmarks:
         spec = find_benchmark(benchmark_name)
         reference_started = time.perf_counter()
-        rz_qc, gridsyn_qc = _build_reference_circuits(spec, settings, gpu)
+        rz_qc, gridsyn_qc = _build_reference_circuits(
+            spec, settings, gpu, need_gridsyn=need_gridsyn
+        )
         from .data import existing_qasm_path, producer_record
 
-        reference_is_existing = (
-            existing_qasm_path(spec.name, "gridsyn", synthesized=False) is not None
-            and existing_qasm_path(spec.name, "gridsyn", synthesized=True) is not None
-        )
+        reference_is_existing = existing_qasm_path(spec.name, "gridsyn", synthesized=False) is not None
         grid_record = producer_record(spec.name, "gridsyn") or {}
         reference_compilation_time = grid_record.get("compilation_time_seconds") or grid_record.get("runtime_seconds")
         if reference_compilation_time is not None:
@@ -203,6 +282,8 @@ def run(
         )
 
         if "gridsyn" in selected_methods:
+            if gridsyn_qc is None:
+                raise RuntimeError(f"No GridSynth reference circuit available for {spec.name}")
             grid_path = write_qasm(gridsyn_qc, circuit_dir / f"{spec.name}_gridsyn_clifford_t.qasm")
             records.append(
                 _record(
@@ -218,6 +299,14 @@ def run(
             )
 
         if "tzap" in selected_methods:
+            # tzap_test.py constructs the comparison baseline by synthesizing
+            # the original grid_rz circuit with the same GridSynth plugin.
+            # Do not use the separately stored grid_c+t file for this arm.
+            original_synth_qc = synthesize_rz(rz_qc, error_threshold)
+            original_synth_path = write_qasm(
+                original_synth_qc,
+                circuit_dir / f"{spec.name}_original_gridsyn_clifford_t.qasm",
+            )
             tzap_rz_path = circuit_dir / f"{spec.name}_tzap_clifford_rz.qasm"
             tzap_rz, elapsed, command = run_tzap(
                 rz_qc,
@@ -273,14 +362,61 @@ def run(
                     source_stage="tzap_then_gridsyn_clifford_t",
                 )
             )
+            reference_metrics = circuit_metrics(original_synth_qc)
+            optimized_metrics = circuit_metrics(tzap_final)
+            reduction: dict[str, object] = {
+                "benchmark": spec.name,
+                "method": "tzap",
+                "baseline": "gridsyn",
+                "baseline_qasm_path": str(original_synth_path),
+                "optimized_qasm_path": str(tzap_final_path),
+            }
+            for metric in ("t_count", "t_depth", "clifford_count"):
+                baseline_value = int(reference_metrics[metric])
+                optimized_value = int(optimized_metrics[metric])
+                reduction[f"gridsyn_{metric}"] = baseline_value
+                reduction[f"tzap_{metric}"] = optimized_value
+                reduction[f"{metric}_reduction_percent"] = (
+                    100.0 * (baseline_value - optimized_value) / baseline_value
+                    if baseline_value
+                    else 0.0
+                )
+            tzap_reductions.append(reduction)
 
         if "pyzx" in selected_methods:
-            # This is the legacy pyzx_path.py workflow: PyZX receives only
-            # the already synthesized GridSynth Clifford+T circuit. PyZX can
-            # re-express phases as RZ, so record that intermediate and
-            # normalize it back to Clifford+T before comparing T counts.
+            if gridsyn_qc is None:
+                raise RuntimeError(f"No GridSynth reference circuit available for {spec.name}")
+            # This is the legacy 2025summer/pyzx_path.py workflow: PyZX
+            # receives only the already synthesized GridSynth Clifford+T
+            # circuit, drops extracted swap lines, and converts only exact
+            # eighth-turn RZ phases back to Clifford+T.
             started = time.perf_counter()
-            pyzx_from_grid, pyzx_grid_stats = optimize_pyzx(gridsyn_qc)
+            try:
+                pyzx_from_grid, pyzx_grid_stats = optimize_pyzx(gridsyn_qc)
+                pyzx_from_grid_ct = convert_pyzx_rz_to_clifford_t(pyzx_from_grid)
+            except Exception as error:
+                failure = {
+                    "benchmark": spec.name,
+                    "method": "pyzx",
+                    "error": repr(error),
+                }
+                pyzx_failures.append(failure)
+                records.append(
+                    {
+                        "benchmark": spec.name,
+                        "method": "pyzx",
+                        "stage": "pyzx_failed",
+                        "source_stage": "gridsyn_clifford_t",
+                        "qasm_path": "",
+                        "runtime_seconds": round(time.perf_counter() - started, 6),
+                        "data_source": "failed",
+                        "command": "pyzx.full_reduce",
+                        "error": repr(error),
+                    }
+                )
+                print(f"WARNING: PyZX failed for {spec.name}: {error}", file=sys.stderr)
+                checkpoint()
+                continue
             pyzx_grid_elapsed = time.perf_counter() - started
             pyzx_grid_raw_path = write_qasm(
                 pyzx_from_grid,
@@ -299,7 +435,6 @@ def run(
                     pyzx_stats=pyzx_grid_stats,
                 )
             )
-            pyzx_from_grid_ct = synthesize_rz(pyzx_from_grid, error_threshold)
             pyzx_grid_final_path = write_qasm(
                 pyzx_from_grid_ct,
                 circuit_dir / f"{spec.name}_pyzx_on_gridsyn_clifford_t.qasm",
@@ -314,8 +449,32 @@ def run(
                     source_stage="pyzx_on_gridsyn_clifford_t",
                 )
             )
+            reference_metrics = circuit_metrics(gridsyn_qc)
+            optimized_metrics = circuit_metrics(pyzx_from_grid_ct)
+            reduction: dict[str, object] = {
+                "benchmark": spec.name,
+                "method": "pyzx",
+                "baseline": "gridsyn",
+                "baseline_qasm_path": str(
+                    existing_qasm_path(spec.name, "gridsyn", synthesized=True) or ""
+                ),
+                "optimized_qasm_path": str(pyzx_grid_final_path),
+            }
+            for metric in ("t_count", "t_depth", "clifford_count"):
+                baseline_value = int(reference_metrics[metric])
+                optimized_value = int(optimized_metrics[metric])
+                reduction[f"gridsyn_{metric}"] = baseline_value
+                reduction[f"pyzx_{metric}"] = optimized_value
+                reduction[f"{metric}_reduction_percent"] = (
+                    100.0 * (baseline_value - optimized_value) / baseline_value
+                    if baseline_value
+                    else 0.0
+                )
+            pyzx_reductions.append(reduction)
 
         if "t-optimizer" in selected_methods:
+            if gridsyn_qc is None:
+                raise RuntimeError(f"No GridSynth reference circuit available for {spec.name}")
             optimizer_path = circuit_dir / f"{spec.name}_t_optimizer_input.qc"
             started = time.perf_counter()
             optimized = optimize_with_toptimizer(gridsyn_qc, t_optimizer_root, optimizer_path)
@@ -333,6 +492,50 @@ def run(
                     source_stage="gridsyn_clifford_t",
                 )
             )
+            reference_metrics = circuit_metrics(gridsyn_qc)
+            optimized_metrics = circuit_metrics(optimized)
+            reduction: dict[str, object] = {
+                "benchmark": spec.name,
+                "method": "t-optimizer",
+                "baseline": "gridsyn",
+                "baseline_qasm_path": str(
+                    existing_qasm_path(spec.name, "gridsyn", synthesized=True) or ""
+                ),
+                "optimized_qasm_path": str(optimized_path),
+            }
+            for metric in ("t_count", "t_depth", "clifford_count"):
+                baseline_value = int(reference_metrics[metric])
+                optimized_value = int(optimized_metrics[metric])
+                reduction[f"gridsyn_{metric}"] = baseline_value
+                reduction[f"t_optimizer_{metric}"] = optimized_value
+                reduction[f"{metric}_reduction_percent"] = (
+                    100.0 * (baseline_value - optimized_value) / baseline_value
+                    if baseline_value
+                    else 0.0
+                )
+            t_optimizer_reductions.append(reduction)
+
+        checkpoint()
+
+    records = merge_records(
+        read_records_csv(output_path / "metrics.csv"),
+        records,
+        ("benchmark", "method", "stage"),
+    )
+    if tzap_reductions:
+        _merge_reduction_file(
+            output_path / "tzap_reductions.csv", tzap_reductions, "tzap"
+        )
+    if t_optimizer_reductions:
+        _merge_reduction_file(
+            output_path / "t_optimizer_reductions.csv",
+            t_optimizer_reductions,
+            "t-optimizer",
+        )
+    if pyzx_reductions:
+        _merge_reduction_file(
+            output_path / "pyzx_reductions.csv", pyzx_reductions, "pyzx"
+        )
 
     manifest = {
         "artifact_version": "0.1.0",
@@ -352,15 +555,98 @@ def run(
         },
         "paper_dependencies": dependency_status(),
         "record_count": len(records),
+        "csv_merge_policy": "replace matching benchmark/method/stage rows and append new configurations; reduction CSVs merge by benchmark/method",
+        "pyzx_failures": pyzx_failures,
         "workflow": {
-            "tzap": "original Clifford+RZ -> tzap -> GridSynth RZ synthesis -> tzap",
+            "tzap": (
+                "grid_rz -> tzap pre -> per-RZ GridSynth synthesis -> tzap post; "
+                "baseline is fresh per-RZ GridSynth synthesis of the same grid_rz"
+            ),
             "pyzx": (
-                "original Clifford+RZ -> PyZX -> GridSynth RZ synthesis; "
-                "GridSynth Clifford+T -> PyZX -> RZ synthesis"
+                "GridSynth Clifford+T -> PyZX full_reduce -> remove swaps -> "
+                "exact eighth-turn RZ conversion"
             ),
             "t_optimizer": "GridSynth Clifford+T -> T-Optimizer IR -> optimized Clifford+T",
         },
     }
+    if tzap_reductions:
+        average: dict[str, object] = {
+            "benchmark": f"AVERAGE_{len(tzap_reductions)}",
+            "method": "tzap",
+            "baseline": "gridsyn",
+            "baseline_qasm_path": "",
+            "optimized_qasm_path": "",
+        }
+        for metric in ("t_count", "t_depth", "clifford_count"):
+            average[f"gridsyn_{metric}"] = sum(
+                float(row[f"gridsyn_{metric}"]) for row in tzap_reductions
+            ) / len(tzap_reductions)
+            average[f"tzap_{metric}"] = sum(
+                float(row[f"tzap_{metric}"]) for row in tzap_reductions
+            ) / len(tzap_reductions)
+            field = f"{metric}_reduction_percent"
+            average[field] = sum(float(row[field]) for row in tzap_reductions) / len(tzap_reductions)
+        _merge_reduction_file(output_path / "tzap_reductions.csv", tzap_reductions, "tzap")
+        manifest["tzap_reduction_file"] = str(output_path / "tzap_reductions.csv")
+        manifest["tzap_reduction_benchmark_count"] = len(tzap_reductions)
+    if t_optimizer_reductions:
+        average = {
+            "benchmark": f"AVERAGE_{len(t_optimizer_reductions)}",
+            "method": "t-optimizer",
+            "baseline": "gridsyn",
+            "baseline_qasm_path": "",
+            "optimized_qasm_path": "",
+        }
+        for metric in ("t_count", "t_depth", "clifford_count"):
+            average[f"gridsyn_{metric}"] = sum(
+                float(row[f"gridsyn_{metric}"]) for row in t_optimizer_reductions
+            ) / len(t_optimizer_reductions)
+            average[f"t_optimizer_{metric}"] = sum(
+                float(row[f"t_optimizer_{metric}"]) for row in t_optimizer_reductions
+            ) / len(t_optimizer_reductions)
+            field = f"{metric}_reduction_percent"
+            average[field] = sum(float(row[field]) for row in t_optimizer_reductions) / len(t_optimizer_reductions)
+        _merge_reduction_file(
+            output_path / "t_optimizer_reductions.csv",
+            t_optimizer_reductions,
+            "t-optimizer",
+        )
+        manifest["t_optimizer_reduction_file"] = str(output_path / "t_optimizer_reductions.csv")
+        manifest["t_optimizer_reduction_benchmark_count"] = len(t_optimizer_reductions)
+    if pyzx_reductions:
+        average = {
+            "benchmark": f"AVERAGE_{len(pyzx_reductions)}",
+            "method": "pyzx",
+            "baseline": "gridsyn",
+            "baseline_qasm_path": "",
+            "optimized_qasm_path": "",
+        }
+        for metric in ("t_count", "t_depth", "clifford_count"):
+            average[f"gridsyn_{metric}"] = sum(
+                float(row[f"gridsyn_{metric}"]) for row in pyzx_reductions
+            ) / len(pyzx_reductions)
+            average[f"pyzx_{metric}"] = sum(
+                float(row[f"pyzx_{metric}"]) for row in pyzx_reductions
+            ) / len(pyzx_reductions)
+            field = f"{metric}_reduction_percent"
+            average[field] = sum(float(row[field]) for row in pyzx_reductions) / len(pyzx_reductions)
+        _merge_reduction_file(output_path / "pyzx_reductions.csv", pyzx_reductions, "pyzx")
+        manifest["pyzx_reduction_file"] = str(output_path / "pyzx_reductions.csv")
+        manifest["pyzx_reduction_benchmark_count"] = len(pyzx_reductions)
+    for method, filename in (
+        ("tzap", "tzap_reductions.csv"),
+        ("t_optimizer", "t_optimizer_reductions.csv"),
+        ("pyzx", "pyzx_reductions.csv"),
+    ):
+        reduction_path = output_path / filename
+        if reduction_path.is_file():
+            reduction_rows = [
+                row
+                for row in read_records_csv(reduction_path)
+                if not str(row.get("benchmark", "")).startswith("AVERAGE_")
+            ]
+            manifest[f"{method}_reduction_file"] = str(reduction_path)
+            manifest[f"{method}_reduction_benchmark_count"] = len(reduction_rows)
     write_json(output_path / "manifest.json", manifest)
     write_records_csv(output_path / "metrics.csv", records)
     return {"manifest": manifest, "records": records}

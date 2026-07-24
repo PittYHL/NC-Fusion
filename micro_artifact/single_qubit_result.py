@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from ncfusion.metrics import write_json, write_records_csv
+from ncfusion.metrics import merge_records, read_records_csv, write_json, write_records_csv
 from ncfusion.spec import find_benchmark, find_experiment
 
 from .common import add_cli_arguments, run_configured
@@ -183,10 +183,41 @@ def run(
                 )
             records.append(record)
 
+    output_path = Path(output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    processed_records: list[dict[str, Any]] = []
     for record in records:
         _set_exact_ncf_depth(record)
         for baseline_method in BASELINE_METHODS:
             _add_baseline_comparison(record["benchmark"], record, baseline_method)
+        processed_records.append(record)
+        checkpoint_existing = read_records_csv(output_path / "metrics.csv")
+        checkpoint_benchmarks = [
+            row
+            for row in checkpoint_existing
+            if not str(row.get("benchmark", "")).startswith("AVERAGE_")
+        ]
+        checkpoint_records = merge_records(
+            checkpoint_benchmarks,
+            processed_records,
+            ("benchmark",),
+        )
+        checkpoint_summaries = [
+            _add_average_record(checkpoint_records, method)
+            for method in BASELINE_METHODS
+        ]
+        write_records_csv(
+            output_path / "metrics.csv",
+            [*checkpoint_records, *checkpoint_summaries],
+        )
+
+    existing_records = read_records_csv(output_path / "metrics.csv")
+    existing_benchmark_records = [
+        row
+        for row in existing_records
+        if not str(row.get("benchmark", "")).startswith("AVERAGE_")
+    ]
+    records = merge_records(existing_benchmark_records, records, ("benchmark",))
     summary_records = [_add_average_record(records, method) for method in BASELINE_METHODS]
     records.extend(summary_records)
     average_reductions = {
@@ -200,11 +231,10 @@ def run(
         }
         for method, summary in zip(BASELINE_METHODS, summary_records)
     }
-    output_path = Path(output)
     manifest = {
         "artifact_version": "0.1.0",
         "evaluation": "single_qubit_result",
-        "source": "existing",
+        "source": source,
         "gpu": gpu,
         "benchmarks": selected,
         "methods": ["ncf-one", *BASELINE_METHODS],
@@ -218,6 +248,7 @@ def run(
             "phoenix": "13 benchmarks (excluding MgO and NaCl)",
         },
         "producer_dataset": "single_qubit_result",
+        "csv_merge_policy": "replace matching benchmark rows and append new benchmarks; rebuild aggregate rows",
     }
     if source == "generate":
         manifest["source"] = "generate"

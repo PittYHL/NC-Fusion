@@ -34,6 +34,12 @@ metadata.
 * **Expected outputs:** `metrics.csv`, `manifest.json`, and, when requested,
   generated QASM under `micro_artifact/circuits/`.
 
+All artifact result CSVs use checkpointed merge semantics. A matching
+configuration row is replaced on rerun; new benchmarks or parameter
+configurations are appended; rows outside the current selection are retained.
+Derived summary and relative CSVs are rebuilt from the retained raw rows, so
+rerunning an experiment does not create duplicate aggregate rows.
+
 ## Access to the artifact
 
 From the repository root, the artifact is in this project. The paper is

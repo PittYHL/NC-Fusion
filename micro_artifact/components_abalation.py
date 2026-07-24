@@ -1,21 +1,11 @@
-"""NC-Fusion component ablation from the legacy ``main_alg.py`` flow.
-
-The three configurations are:
-
-1. ``anti_commuting_only``: transform and compress ``no_commute_group``;
-2. ``anti_commuting_plus_commuting``: transform and compress ``group``
-   without reordering;
-3. ``full_ncfusion``: transform ``group + no_commute_group`` and apply the
-   group reordering/scheduling pass before compression.
-
-These correspond to the calls around lines 279, 282, and 287 of the original
-``main_alg.py``.
-"""
+"""NC-Fusion component ablation from the legacy ``main_alg.py`` flow."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 import random
 import sys
@@ -32,10 +22,23 @@ from .error_common import compile_method
 
 STATUS = "available"
 DEFAULT_VARIANTS = (
-    "anti_commuting_only",
-    "anti_commuting_plus_commuting",
-    "full_ncfusion",
+    "scheduling",
+    "commuting-grouping",
+    "anti-commuting-grouping",
 )
+VARIANT_ALIASES = {
+    "ncf-one": "scheduling",
+    "ncf-one-without-reordering": "commuting-grouping",
+    "ncf-one-without-reordering-and-commuting-grouping": "anti-commuting-grouping",
+    "full_ncfusion": "scheduling",
+    "anti_commuting_plus_commuting": "commuting-grouping",
+    "anti_commuting_only": "anti-commuting-grouping",
+}
+VARIANT_LABELS = {
+    "anti-commuting-grouping": "Anti-commuting grouping",
+    "commuting-grouping": "Commuting grouping",
+    "scheduling": "Scheduling",
+}
 DEFAULT_BENCHMARKS = (
     "LiH",
     "H2O",
@@ -104,16 +107,74 @@ def _group_inputs(
     group, no_commute_group = grouping(labels, budget, window, use_window=True)
     transformed_group = _transform_groups(group, pauli_list)
     transformed_no_commute = _transform_groups(no_commute_group, pauli_list)
-    combined = tuple(
-        left + right
-        for left, right in zip(transformed_group, transformed_no_commute)
-    )
-    reordered = reorder_pauli_groups(*combined)
+    without_reordering = transformed_group
+    reordered = reorder_pauli_groups(*transformed_group)
     return {
-        "anti_commuting_only": transformed_no_commute,
-        "anti_commuting_plus_commuting": transformed_group,
-        "full_ncfusion": reordered,
+        "scheduling": reordered,
+        "commuting-grouping": without_reordering,
+        "anti-commuting-grouping": transformed_no_commute,
     }, len(labels)
+
+
+def _read_records(path: Path) -> list[dict[str, object]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _record_key(record: dict[str, object]) -> tuple[str, ...]:
+    def value(field: str) -> str:
+        item = record.get(field, "")
+        return "" if item in (None, "") else str(item)
+
+    return tuple(
+        value(field)
+        for field in (
+            "benchmark",
+            "variant",
+            "budget",
+            "window",
+            "trotter_steps",
+            "evolution_time",
+            "error_threshold",
+            "pauli_order_seed",
+        )
+    )
+
+
+def _merge_record(
+    records: list[dict[str, object]],
+    update: dict[str, object],
+) -> list[dict[str, object]]:
+    key = _record_key(update)
+    for index, record in enumerate(records):
+        if _record_key(record) == key:
+            records[index] = update
+            return records
+    records.append(update)
+    return records
+
+
+def _reusable_scheduling_record(
+    benchmark: Any,
+    error_threshold: float,
+) -> dict[str, Any] | None:
+    """Reuse canonical producer QASM only for its default threshold."""
+
+    record = reusable_record(benchmark, "ncf-one")
+    if record is None:
+        return None
+    stored_threshold = record.get("error_threshold")
+    if stored_threshold in (None, ""):
+        stored_threshold = 0.001
+    try:
+        matches_threshold = math.isclose(
+            float(stored_threshold), float(error_threshold), rel_tol=0.0, abs_tol=1e-12
+        )
+    except (TypeError, ValueError):
+        matches_threshold = False
+    return record if matches_threshold else None
 
 
 def _circuit_metrics(circuit: Any) -> dict[str, int]:
@@ -123,13 +184,179 @@ def _circuit_metrics(circuit: Any) -> dict[str, int]:
     operations = list(circuit.data)
     t_names = {"t", "tdg"}
     t_count = sum(operation(item).name.lower() in t_names for item in operations)
-    t_depth = int(circuit.depth(lambda item: operation(item).name.lower() in t_names))
+    t_depth = int(
+        circuit.depth(lambda gate: gate[0].name == "t" or gate[0].name == "tdg")
+    )
     return {
         "t_count": int(t_count),
         "t_depth": t_depth,
         "clifford_count": len(operations) - int(t_count),
         "gate_count": len(operations),
     }
+
+
+_RELATIVE_METRICS = ("t_count", "t_depth", "clifford_count")
+_RELATIVE_LABELS = {
+    "t_count": "T-count",
+    "t_depth": "T-depth",
+    "clifford_count": "Clifford count",
+}
+
+
+def _raw_reduction_field(metric: str) -> str:
+    return (
+        "clifford_reduction_percent"
+        if metric == "clifford_count"
+        else f"{metric}_reduction_percent"
+    )
+
+
+def _relative_reduction_percent(
+    variant: str,
+    scheduling_reduction: object,
+    variant_reduction: object,
+) -> float | None:
+    if variant == "scheduling":
+        return 100.0
+    if scheduling_reduction in (None, "", "nan") or variant_reduction in (None, "", "nan"):
+        return None
+    baseline = float(scheduling_reduction)
+    candidate = float(variant_reduction)
+    if baseline == 0:
+        return 0.0 if candidate == 0 else None
+    return 100.0 * candidate / baseline
+
+
+def _relative_records(
+    records: list[dict[str, object]],
+    selected_variants: tuple[str, ...],
+) -> list[dict[str, object]]:
+    by_benchmark: dict[str, dict[str, dict[str, object]]] = {}
+    for record in records:
+        benchmark = str(record.get("benchmark", ""))
+        variant = str(record.get("variant", ""))
+        if not benchmark or benchmark.startswith("AVERAGE_") or variant not in DEFAULT_VARIANTS:
+            continue
+        by_benchmark.setdefault(benchmark, {})[variant] = record
+
+    relative: list[dict[str, object]] = []
+    for benchmark, variants in by_benchmark.items():
+        scheduling = variants.get("scheduling")
+        if scheduling is None:
+            continue
+        row_by_variant = {
+            variant: variants.get(variant)
+            for variant in selected_variants
+            if variants.get(variant) is not None
+        }
+        for variant, source in row_by_variant.items():
+            item: dict[str, object] = {
+                "benchmark": benchmark,
+                "variant": variant,
+                "variant_label": VARIANT_LABELS[variant],
+                "data_source": "derived_from_metrics",
+            }
+            for metric in _RELATIVE_METRICS:
+                item[f"{metric}_relative_reduction_percent"] = _relative_reduction_percent(
+                    variant,
+                    scheduling.get(_raw_reduction_field(metric)),
+                    source.get(_raw_reduction_field(metric)),
+                )
+            relative.append(item)
+    return relative
+
+
+def _relative_average_records(
+    relative: list[dict[str, object]],
+    selected_variants: tuple[str, ...],
+) -> list[dict[str, object]]:
+    benchmark_count = len({str(item["benchmark"]) for item in relative})
+    averages: list[dict[str, object]] = []
+    for variant in selected_variants:
+        rows = [item for item in relative if item["variant"] == variant]
+        average: dict[str, object] = {
+            "benchmark": f"AVERAGE_{benchmark_count}",
+            "variant": variant,
+            "variant_label": VARIANT_LABELS[variant],
+            "data_source": "aggregate",
+            "benchmark_count": len(rows),
+        }
+        for metric in _RELATIVE_METRICS:
+            field = f"{metric}_relative_reduction_percent"
+            values = [float(item[field]) for item in rows if item.get(field) is not None]
+            average[field] = sum(values) / len(values) if values else None
+        averages.append(average)
+    return averages
+
+
+def _write_relative_plot(
+    output_path: Path,
+    relative: list[dict[str, object]],
+    averages: list[dict[str, object]],
+) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        return None
+
+    variants = tuple(item["variant"] for item in averages)
+    benchmarks = list(dict.fromkeys(str(item["benchmark"]) for item in relative))
+    plot_records = [
+        *relative,
+        *[
+            {**average, "benchmark": "Average"}
+            for average in averages
+        ],
+    ]
+    labels = [*benchmarks, "Average"]
+    x = np.arange(len(labels))
+    figure, axes = plt.subplots(1, 3, figsize=(19, 6), sharey=True)
+    for axis, metric in zip(axes, _RELATIVE_METRICS):
+        field = f"{metric}_relative_reduction_percent"
+        widths = np.linspace(0.78, 0.34, max(len(variants), 1))
+        for index, variant in enumerate(variants):
+            values = []
+            for label in labels:
+                row = next(
+                    (
+                        item
+                        for item in plot_records
+                        if item["benchmark"] == label
+                        and item["variant"] == variant
+                    ),
+                    None,
+                )
+                value = None if row is None else row.get(field)
+                values.append(min(100.0, float(value)) if value is not None else 0.0)
+            axis.bar(
+                x,
+                values,
+                widths[index],
+                label=VARIANT_LABELS[variant],
+            )
+        axis.axhline(100, color="black", linewidth=0.8, linestyle="--")
+        axis.set_title(_RELATIVE_LABELS[metric])
+        axis.set_xticks(x)
+        axis.set_xticklabels(labels, rotation=55, ha="right", fontsize=8)
+        axis.grid(axis="y", alpha=0.25)
+    axes[0].set_ylabel("Percentage of Scheduling (NCF-one) reduction (%)")
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        legend_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.99),
+        ncol=len(variants),
+        frameon=False,
+    )
+    figure.suptitle("Component ablation relative to Scheduling (NCF-one)", y=0.91)
+    figure.tight_layout(rect=(0, 0, 1, 0.86))
+    output_path.mkdir(parents=True, exist_ok=True)
+    plot_path = output_path / "components_abalation_relative_reductions.png"
+    figure.savefig(plot_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+    return plot_path
 
 
 def run(
@@ -150,7 +377,10 @@ def run(
 ) -> dict[str, Any]:
     """Run the three component configurations and write circuit metrics."""
 
-    selected_variants = tuple(variants or methods or DEFAULT_VARIANTS)
+    requested_variants = tuple(variants or methods or DEFAULT_VARIANTS)
+    selected_variants = tuple(
+        dict.fromkeys(VARIANT_ALIASES.get(variant, variant) for variant in requested_variants)
+    )
     unknown = [variant for variant in selected_variants if variant not in DEFAULT_VARIANTS]
     if unknown:
         raise ValueError(f"unknown component-ablation variant(s): {', '.join(unknown)}")
@@ -170,14 +400,21 @@ def run(
     random.seed(seed)
     np.random.seed(seed)
     selected_benchmarks = benchmarks or list(DEFAULT_BENCHMARKS)
-    records: list[dict[str, object]] = []
+    output_path = Path(output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    records = _read_records(output_path / "metrics.csv")
+
+    def add_record(record: dict[str, object]) -> None:
+        nonlocal records
+        records = _merge_record(records, record)
+        write_records_csv(output_path / "metrics.csv", records)
 
     for benchmark_name in selected_benchmarks:
         spec = find_benchmark(benchmark_name)
         hamiltonian = build_hamiltonian(spec)
         grouped_inputs = None
         pauli_count = int(spec.pauli_terms)
-        if any(variant != "full_ncfusion" for variant in selected_variants):
+        if any(variant != "scheduling" for variant in selected_variants) or budget != 1:
             grouped_inputs, pauli_count = _group_inputs(
                 hamiltonian,
                 budget=budget,
@@ -208,17 +445,18 @@ def run(
             raise RuntimeError("Gridsynth did not return a reference circuit")
         gridsyn_metrics = _circuit_metrics(gridsyn_qc)
         for variant in selected_variants:
-            if variant == "full_ncfusion" and budget == 1:
-                existing = reusable_record(spec, "ncf-one")
+            if variant == "scheduling" and budget == 1:
+                existing = _reusable_scheduling_record(spec, error_threshold)
                 if existing is not None:
                     record = {
-                        key: existing[key]
+                        key: int(existing[key])
                         for key in ("t_count", "t_depth", "clifford_count", "gate_count")
                     }
                     record.update(
                         {
                             "benchmark": spec.name,
                             "variant": variant,
+                            "variant_label": VARIANT_LABELS[variant],
                             "budget": budget,
                             "window": window,
                             "pauli_strings": pauli_count,
@@ -231,6 +469,8 @@ def run(
                             "compilation_time_seconds": existing.get("compilation_time_seconds"),
                             "data_source": "single_qubit_result",
                             "qasm_path": existing.get("qasm_path"),
+                            "error_threshold": error_threshold,
+                            "pauli_order_seed": pauli_order_seed,
                             "gridsyn_t_count": gridsyn_metrics["t_count"],
                             "gridsyn_t_depth": gridsyn_metrics["t_depth"],
                             "gridsyn_clifford_count": gridsyn_metrics["clifford_count"],
@@ -252,29 +492,45 @@ def run(
                             ),
                         }
                     )
-                    records.append(record)
+                    add_record(record)
                     continue
 
             start = time.perf_counter()
-            if grouped_inputs is None:
-                raise RuntimeError("ablation inputs were not generated")
-            new_paulis, commute_paulis, circuits = grouped_inputs[variant]
-            rz_qc, clifford_t_qc = compressor_circuit(
-                new_paulis,
-                commute_paulis,
-                circuits,
-                error_threshold,
-                budget,
-                hamiltonian.num_qubits,
-                gpu=gpu,
-                num_paulis=pauli_count,
-                fix_error_threshold=0,
-                trotter_steps=trotter_steps,
-                evolution_time=evolution_time,
-                synthesize=True,
-                benchmark=None,
-                t_budget=t_budget,
-            )
+            compile_started = time.perf_counter()
+            if variant == "scheduling" and budget == 1:
+                rz_qc, clifford_t_qc = compile_method(
+                    hamiltonian,
+                    "ncf-one",
+                    synthesize=True,
+                    error_threshold=error_threshold,
+                    t_budget=t_budget,
+                    gpu=gpu,
+                    trotter_steps=trotter_steps,
+                    evolution_time=evolution_time,
+                    window=window,
+                    pauli_order_seed=pauli_order_seed,
+                )
+            else:
+                if grouped_inputs is None:
+                    raise RuntimeError("ablation inputs were not generated")
+                new_paulis, commute_paulis, circuits = grouped_inputs[variant]
+                rz_qc, clifford_t_qc = compressor_circuit(
+                    new_paulis,
+                    commute_paulis,
+                    circuits,
+                    error_threshold,
+                    budget,
+                    hamiltonian.num_qubits,
+                    gpu=gpu,
+                    num_paulis=pauli_count,
+                    fix_error_threshold=0,
+                    trotter_steps=trotter_steps,
+                    evolution_time=evolution_time,
+                    synthesize=True,
+                    benchmark=None,
+                    t_budget=t_budget,
+                )
+            compilation_time = time.perf_counter() - compile_started
             if clifford_t_qc is None:
                 raise RuntimeError(f"component variant {variant} did not synthesize a circuit")
             record = _circuit_metrics(clifford_t_qc)
@@ -282,6 +538,7 @@ def run(
                 {
                     "benchmark": spec.name,
                     "variant": variant,
+                    "variant_label": VARIANT_LABELS[variant],
                     "budget": budget,
                     "window": window,
                     "pauli_strings": pauli_count,
@@ -292,8 +549,10 @@ def run(
                         for item in rz_qc.data
                     ),
                     "runtime_seconds": round(time.perf_counter() - start, 4),
-                    "compilation_time_seconds": round(time.perf_counter() - start, 4),
+                    "compilation_time_seconds": round(compilation_time, 4),
                     "data_source": "generated",
+                    "error_threshold": error_threshold,
+                    "pauli_order_seed": pauli_order_seed,
                     "gridsyn_t_count": gridsyn_metrics["t_count"],
                     "gridsyn_t_depth": gridsyn_metrics["t_depth"],
                     "gridsyn_clifford_count": gridsyn_metrics["clifford_count"],
@@ -320,9 +579,15 @@ def run(
                     ),
                 }
             )
-            records.append(record)
+            record["runtime_seconds"] = round(time.perf_counter() - start, 4)
+            add_record(record)
 
-    output_path = Path(output)
+    relative = _relative_records(records, selected_variants)
+    relative_averages = _relative_average_records(relative, selected_variants)
+    relative_records = [*relative, *relative_averages]
+    relative_plot = _write_relative_plot(output_path, relative, relative_averages)
+    write_records_csv(output_path / "relative_metrics.csv", relative_records)
+
     manifest = {
         "artifact_version": "0.1.0",
         "evaluation": "components_abalation",
@@ -332,16 +597,25 @@ def run(
         "benchmarks": selected_benchmarks,
         "variants": selected_variants,
         "variant_definitions": {
-            "anti_commuting_only": "no_commute_new_paulis; main_alg.py line 279",
-            "anti_commuting_plus_commuting": "new_paulis without reordering; main_alg.py line 282",
-            "full_ncfusion": "reordered new_paulis plus no_commute_new_paulis; main_alg.py line 287",
+            "scheduling": "normal NC-Fusion; reuse single-qubit producer QASM when available",
+            "commuting-grouping": "new_paulis, commute_paulis, and circuits without reorder_pauli_groups",
+            "anti-commuting-grouping": "no_commute_new_paulis, no_commute_commute_paulis, and no_commute_circuits only",
         },
         "record_count": len(records),
+        "csv_merge_policy": "replace matching benchmark/variant/budget/window/Trotter configuration rows and append new configurations",
+        "relative_metrics_file": str(output_path / "relative_metrics.csv"),
+        "relative_plot": str(relative_plot) if relative_plot is not None else None,
+        "relative_definition": "100 * component reduction / scheduling (NCF-one) reduction",
         "paper_dependencies": dependency_status(),
     }
     write_json(output_path / "manifest.json", manifest)
     write_records_csv(output_path / "metrics.csv", records)
-    return {"manifest": manifest, "records": records}
+    return {
+        "manifest": manifest,
+        "records": records,
+        "relative_records": relative_records,
+        "relative_plot": relative_plot,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:

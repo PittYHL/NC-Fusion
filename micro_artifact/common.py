@@ -33,7 +33,7 @@ EVALUATIONS: dict[str, dict[str, str]] = {
     "two_qubit_result": {
         "status": "available",
         "experiment": "table4",
-        "source": "configured ncf-two runner; requires Synthetiq/Docker",
+        "source": "2025summer/same_error.py comparison; reuses or generates QASM and requires Synthetiq/Docker for missing ncf-two circuits",
     },
     "analytical_estimation": {
         "status": "available",
@@ -48,7 +48,7 @@ EVALUATIONS: dict[str, dict[str, str]] = {
     "pauli_string_order_sensitivity": {
         "status": "available",
         "experiment": "random-order",
-        "source": "configured randomized-order runner",
+        "source": "2025summer/random_order.py adapter with append-safe statistics",
     },
     "components_abalation": {
         "status": "available",
@@ -63,7 +63,7 @@ EVALUATIONS: dict[str, dict[str, str]] = {
     "trotter_error": {
         "status": "available",
         "experiment": "5.7.1 Trotter operator-norm error",
-        "source": "trotter_operator_norm_error(rz_qc)",
+        "source": "trotter_operator_norm_error(c+t at step 1; generated rz otherwise)",
     },
     "application_level_fidelity": {
         "status": "available",
