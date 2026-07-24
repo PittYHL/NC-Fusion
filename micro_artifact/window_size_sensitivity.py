@@ -60,6 +60,49 @@ def _benchmarks(requested: Iterable[str] | None) -> list[str]:
     return selected
 
 
+def _windows(
+    requested: Iterable[str | int] | None,
+    methods: Iterable[str],
+) -> list[str | int] | None:
+    """Validate an optional common window selection for the chosen methods."""
+
+    if requested is None:
+        return None
+    selected: list[str | int] = []
+    for value in requested:
+        text = str(value).strip().lower()
+        if text == "full":
+            window: str | int = "full"
+        else:
+            try:
+                window = int(text)
+            except ValueError as error:
+                raise ValueError(
+                    f"invalid window size {value!r}; use full or a positive integer"
+                ) from error
+            if window <= 0:
+                raise ValueError(f"window size must be positive, got {value!r}")
+        if window not in selected:
+            selected.append(window)
+    if not selected:
+        raise ValueError("at least one window size must be selected")
+
+    invalid: list[str] = []
+    for method in methods:
+        allowed = SINGLE_WINDOWS if method == "ncf-one" else TWO_WINDOWS
+        unsupported = [str(window) for window in selected if window not in allowed]
+        if unsupported:
+            invalid.append(f"{method}: {', '.join(unsupported)}")
+    if invalid:
+        raise ValueError(
+            "selected window size(s) are not available for "
+            + "; ".join(invalid)
+            + ". Single-qubit choices are full, 128, 64, 32, 16, 8, 4; "
+            "two-qubit choices are full, 256, 128, 64, 32, 16."
+        )
+    return selected
+
+
 def _threshold(method: str, benchmark: str, single: float, two_molecule: float, two_spin: float) -> float:
     if method == "ncf-one":
         return single
@@ -219,6 +262,7 @@ def run(
     two_molecule_threshold: float = 0.03,
     two_spin_threshold: float = 0.07,
     source: str = "existing",
+    window_sizes: list[str | int] | None = None,
 ) -> dict[str, Any]:
     """Run and checkpoint the requested single- and two-qubit sweeps."""
 
@@ -231,6 +275,7 @@ def run(
     if source not in {"existing", "generate"}:
         raise ValueError("source must be existing or generate")
     selected = _benchmarks(benchmarks)
+    selected_windows = _windows(window_sizes, chosen_methods)
     output_path = Path(output)
     records: list[dict[str, object]] = list(_read_records(output_path / "metrics.csv"))
     if source == "existing":
@@ -245,6 +290,7 @@ def run(
             "evaluation": "window_size_sensitivity",
             "benchmarks": selected,
             "methods": chosen_methods,
+            "window_sizes": selected_windows,
             "source_mode": "existing",
             "relative_metrics_file": str(output_path / "relative_metrics.csv"),
             "csv_merge_policy": "read existing checkpointed results",
@@ -263,8 +309,17 @@ def run(
         "paper_section": "5.5",
         "benchmarks": selected,
         "methods": chosen_methods,
-        "single_windows": list(SINGLE_WINDOWS),
-        "two_windows": list(TWO_WINDOWS),
+        "single_windows": list(
+            SINGLE_WINDOWS
+            if selected_windows is None
+            else [window for window in selected_windows if window in SINGLE_WINDOWS]
+        ),
+        "two_windows": list(
+            TWO_WINDOWS
+            if selected_windows is None
+            else [window for window in selected_windows if window in TWO_WINDOWS]
+        ),
+        "window_sizes": selected_windows,
         "thresholds": {
             "ncf-one": single_threshold,
             "ncf-two:LiH/H2O": two_molecule_threshold,
@@ -284,7 +339,12 @@ def run(
 
     for benchmark in selected:
         for method in chosen_methods:
-            windows = SINGLE_WINDOWS if method == "ncf-one" else TWO_WINDOWS
+            available_windows = SINGLE_WINDOWS if method == "ncf-one" else TWO_WINDOWS
+            windows = (
+                available_windows
+                if selected_windows is None
+                else tuple(window for window in selected_windows if window in available_windows)
+            )
             threshold = _threshold(
                 method,
                 benchmark,
@@ -389,6 +449,13 @@ def _main() -> None:
     parser.add_argument("--single-threshold", type=float, default=0.005)
     parser.add_argument("--two-molecule-threshold", type=float, default=0.03)
     parser.add_argument("--two-spin-threshold", type=float, default=0.07)
+    parser.add_argument(
+        "--window-size",
+        "--window",
+        action="append",
+        dest="window_sizes",
+        help="window size to run (full or integer); repeat for multiple sizes",
+    )
     args = parser.parse_args()
     try:
         result = run(
@@ -401,6 +468,7 @@ def _main() -> None:
             two_molecule_threshold=args.two_molecule_threshold,
             two_spin_threshold=args.two_spin_threshold,
             source=args.source,
+            window_sizes=args.window_sizes,
         )
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

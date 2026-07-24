@@ -289,11 +289,17 @@ requested window:
 PYTHONPATH=src:legacy:. python -m micro_artifact.window_size_sensitivity \
   --benchmark LiH \
   --method ncf-one \
+  --window-size full \
+  --window-size 64 \
   --source generate \
   --output micro_artifact/results/runs/window_size_sensitivity
 ```
 
-With no selections, it evaluates LiH, H2O, Ising-2D-60, and
+Repeat `--window-size` to run only selected windows. Use `full` or a positive
+integer. A window must be valid for every selected method: single-qubit allows
+`full, 128, 64, 32, 16, 8, 4`, while two-qubit allows
+`full, 256, 128, 64, 32, 16`. If omitted, it evaluates all configured windows.
+With no benchmark or method selections, it evaluates LiH, H2O, Ising-2D-60, and
 Heisenberg-2D-60 for both NC-Fusion budgets. Single-qubit uses windows
 `full, 128, 64, 32, 16, 8, 4` at threshold `0.005`; two-qubit uses windows
 `full, 256, 128, 64, 32, 16` at threshold `0.03` for LiH/H2O and `0.07` for
@@ -527,7 +533,8 @@ directory. When T-Zap is selected, `tzap_reductions.csv` reports per-benchmark
 and arithmetic-average T-count, T-depth, and Clifford-count reductions versus
 fresh GridSynth synthesis of the same stored `grid_rz` QASM. The T-Zap path is
 `grid_rz -> tzap pre -> per-RZ GridSynth synthesis -> tzap post`; T-count and
-T-depth both count `t` and `tdg`, matching `ncf/NCF/tzap_test.py`.
+T-depth both count `t` and `tdg` using the same Qiskit depth filter as the
+artifact metrics.
 The PyZX arm follows the reference PyZX workflow: it reads `grid_c+t` QASM,
 runs `full_reduce`, removes extracted `swap` lines, and converts only exact
 `pi/4`-multiple RZ phases back to Clifford+T before measuring reductions.

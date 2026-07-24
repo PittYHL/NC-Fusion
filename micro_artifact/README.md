@@ -29,6 +29,8 @@ runs preserve previously recorded benchmark and comparison fields.
 Spacetime-volume analysis also accepts repeated `--benchmark` options and
 supports the short Ising/Heisenberg aliases; omitted options use all 13
 benchmarks.
+Window-size sensitivity accepts repeated `--window-size` options such as
+`--window-size full --window-size 64`; omitted options run the complete sweep.
 
 Artifact experiments read existing inputs or results by default. Use their
 `--source generate` option to regenerate selected results; producer and error-evaluation
